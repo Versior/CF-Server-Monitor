@@ -90,7 +90,7 @@ server-monitor/
 1. 打开 [API Tokens 页面](https://dash.cloudflare.com/profile/api-tokens)
 2. 点击 **Create Token/创建令牌**
 3. 选择（ **Edit Cloudflare Workers/编辑 Cloudflare Workers** ）模板
-4. 在 **Account Resources/**帐户资源 选择你的账户
+4. 在 **Account Resources/帐户资源** 选择你的账户
 5. 点击 **Continue to summary/继续以显示摘要**→ **Create Token/创建令牌**
 6. 复制生成的 Token（只显示一次！）
 

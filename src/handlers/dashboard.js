@@ -38,7 +38,7 @@ export async function handleServersAPI(request, env, sys) {
   if (!isLoggedIn) {
     query += " WHERE is_hidden != '1'";
   }
-  query += ' ORDER BY server_group, name';
+  query += ' ORDER BY sort_order ASC';
   
   const { results } = await env.DB.prepare(query).all();
   
@@ -105,7 +105,7 @@ export async function handleDashboard(request, env, sys) {
   if (!isLoggedIn) {
     query += " WHERE is_hidden != '1'";
   }
-  query += ' ORDER BY server_group, name';
+  query += ' ORDER BY sort_order ASC';
   
   const { results } = await env.DB.prepare(query).all();
   
@@ -116,6 +116,7 @@ export async function handleDashboard(request, env, sys) {
   let globalSpeedIn = 0, globalSpeedOut = 0;
   let globalNetTx = 0, globalNetRx = 0;
   const groups = {};
+  const groupOrder = [];
   const countryStats = {};
 
   if (results && results.length > 0) {
@@ -141,9 +142,12 @@ export async function handleDashboard(request, env, sys) {
       globalNetTx += tx_val;
       globalNetRx += rx_val;
 
-      // 分组
+      // 分组（按首次出现顺序记录分组）
       const grpName = server.server_group || 'Default';
-      if (!groups[grpName]) groups[grpName] = [];
+      if (!groups[grpName]) {
+        groups[grpName] = [];
+        groupOrder.push(grpName);
+      }
       groups[grpName].push(server);
 
       // 国家统计
@@ -167,10 +171,11 @@ export async function handleDashboard(request, env, sys) {
   let cardContentHtml = '';
   let tableBodyHtml = '';
 
-  if (Object.keys(groups).length === 0) {
+  if (groupOrder.length === 0) {
     cardContentHtml = '<div class="empty-state">[!] 暂无服务器，请在 <a href="/admin" style="color: var(--accent-cyan);">后台管理</a> 中添加</div>';
   } else {
-    for (const [grpName, grpServers] of Object.entries(groups)) {
+    for (const grpName of groupOrder) {
+      const grpServers = groups[grpName];
       cardContentHtml += `<div class="group-section">
         <div class="group-header" data-group="${grpName}">
           <span class="prompt-sign">#</span> ${grpName} 
@@ -1053,18 +1058,23 @@ export async function handleDashboard(request, env, sys) {
     
     function renderCards(servers, now) {
       const groups = {};
+      const groupOrder = [];
       for (const server of servers) {
         const grpName = server.server_group || 'Default';
-        if (!groups[grpName]) groups[grpName] = [];
+        if (!groups[grpName]) {
+          groups[grpName] = [];
+          groupOrder.push(grpName);
+        }
         groups[grpName].push(server);
       }
       
-      if (Object.keys(groups).length === 0) {
+      if (groupOrder.length === 0) {
         return '<div class="empty-state">[!] 暂无服务器，请在 <a href="/admin" style="color: var(--accent-cyan);">后台管理</a> 中添加</div>';
       }
       
       let html = '';
-      for (const [grpName, grpServers] of Object.entries(groups)) {
+      for (const grpName of groupOrder) {
+        const grpServers = groups[grpName];
         html += '<div class="group-section">';
         html += '<div class="group-header" data-group="' + grpName + '">';
         html += '<span class="prompt-sign">#</span> ' + grpName + ' <span class="group-count">[' + grpServers.length + ']</span>';

@@ -25,6 +25,9 @@ export async function handleAdminAPI(request, env, sys) {
       const name = data.name || 'New Server';
       const group = data.server_group || 'Default';
       
+      const { max_order } = await env.DB.prepare('SELECT COALESCE(MAX(sort_order), -1) as max_order FROM servers').first();
+      const sortOrder = (max_order || 0) + 1;
+      
       await env.DB.prepare(`
         INSERT INTO servers 
         (id, name, cpu, ram, disk, load_avg, uptime, last_updated, 
@@ -33,15 +36,15 @@ export async function handleAdminAPI(request, env, sys) {
          disk_total, disk_used, processes, tcp_conn, udp_conn, 
          country, ip_v4, ip_v6, server_group, price, expire_date, 
          bandwidth, traffic_limit, ping_ct, ping_cu, ping_cm, ping_bd, 
-         monthly_rx, monthly_tx, last_rx, last_tx, reset_month) 
+         monthly_rx, monthly_tx, last_rx, last_tx, reset_month, sort_order) 
         VALUES (?, ?, '0', '0', '0', '0', '0', 0, 
                 '0', '0', '0', '0', '0', 
                 '', '', '', '', '0', '0', '0', 
                 '0', '0', '0', '0', '0', 
                 'XX', '0', '0', ?, '', '', 
                 '', '', '0', '0', '0', '0', 
-                '0', '0', '0', '0', '')
-      `).bind(id, name, group).run();
+                '0', '0', '0', '0', '', ?)
+      `).bind(id, name, group, sortOrder).run();
       
       return new Response(JSON.stringify({ 
         success: true, 
@@ -69,6 +72,24 @@ export async function handleAdminAPI(request, env, sys) {
         headers: { 'Content-Type': 'application/json' }
       });
     } 
+    else if (data.action === 'save_order') {
+      // 保存服务器排序
+      const { orders } = data;
+      if (!orders || !Array.isArray(orders) || orders.length === 0) {
+        return new Response(JSON.stringify({ error: '缺少排序数据' }), { 
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      
+      for (let i = 0; i < orders.length; i++) {
+        await env.DB.prepare('UPDATE servers SET sort_order = ? WHERE id = ?').bind(i, orders[i]).run();
+      }
+      
+      return new Response(JSON.stringify({ success: true, message: '排序已保存' }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
     else if (data.action === 'edit') {
       // 编辑服务器信息
       const { id, server_group, price, expire_date, bandwidth, traffic_limit, is_hidden } = data;

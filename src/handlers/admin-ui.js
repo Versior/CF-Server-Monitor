@@ -10,9 +10,9 @@ export async function handleAdminUI(request, env, sys) {
   const url = new URL(request.url);
   const host = url.origin;
   
-  // 获取所有服务器信息
+  // 获取所有服务器信息（按 sort_order 排序）
   const { results } = await env.DB.prepare(
-    'SELECT id, name, last_updated, server_group, price, expire_date, bandwidth, traffic_limit, country, is_hidden FROM servers ORDER BY server_group, name'
+    'SELECT id, name, last_updated, server_group, price, expire_date, bandwidth, traffic_limit, country, is_hidden, sort_order FROM servers ORDER BY sort_order ASC'
   ).all();
   
   const now = Date.now();
@@ -36,7 +36,8 @@ export async function handleAdminUI(request, env, sys) {
       const cmd = `${cmdApp} -sL ${host}/install.sh | bash -s install ${s.id} ${env.API_SECRET} ${host}/update 60`;
       
       trs += `
-        <tr class="server-row">
+        <tr class="server-row" draggable="true" data-server-id="${s.id}">
+          <td class="drag-handle" style="text-align:center; cursor:move; user-select:none;" title="拖拽排序">⋮⋮</td>
           <td style="text-align:center;"><input type="checkbox" class="server-checkbox" value="${s.id}"></td>
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
@@ -731,6 +732,40 @@ export async function handleAdminUI(request, env, sys) {
       border-top: 1px solid var(--border-color);
     }
     
+    /* 拖拽排序 */
+    .server-row.dragging {
+      opacity: 0.5;
+      background: var(--accent-cyan) !important;
+    }
+    
+    .server-row.drag-over {
+      border-top: 2px solid var(--accent-green);
+    }
+    
+    .drag-handle {
+      color: var(--text-muted);
+      font-size: 12px;
+      letter-spacing: -2px;
+    }
+    
+    .drag-handle:hover {
+      color: var(--accent-cyan);
+    }
+    
+    .drag-info {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 10px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--accent-green);
+      border-radius: 4px;
+      color: var(--accent-green);
+      font-size: 12px;
+      z-index: 10000;
+      animation: fadeIn 0.2s;
+    }
+    
     /* 文件上传按钮 */
     .upload-btn-wrapper {
       position: relative;
@@ -888,6 +923,7 @@ export async function handleAdminUI(request, env, sys) {
           <table class="terminal-table">
             <thead>
               <tr>
+                <th style="width:35px; text-align:center;">↕️</th>
                 <th style="width:30px;"><input type="checkbox" id="select-all" onchange="toggleSelectAll()" style="accent-color: var(--accent-green);"></th>
                 <th>HOSTNAME</th>
                 <th>GROUP</th>
@@ -900,7 +936,7 @@ export async function handleAdminUI(request, env, sys) {
               </tr>
             </thead>
             <tbody>
-              ${trs || '<tr><td colspan="9" class="empty-state"><span class="empty-icon">📦</span> No servers configured</td></tr>'}
+              ${trs || '<tr><td colspan="10" class="empty-state"><span class="empty-icon">📦</span> No servers configured</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -1354,8 +1390,109 @@ export async function handleAdminUI(request, env, sys) {
       }
     });
     
+    // 拖拽排序功能
+    let draggedRow = null;
+    let dragInfoEl = null;
+    
+    function showDragInfo(text) {
+      hideDragInfo();
+      dragInfoEl = document.createElement('div');
+      dragInfoEl.className = 'drag-info';
+      dragInfoEl.textContent = text;
+      document.body.appendChild(dragInfoEl);
+    }
+    
+    function hideDragInfo() {
+      if (dragInfoEl) {
+        dragInfoEl.remove();
+        dragInfoEl = null;
+      }
+    }
+    
+    function initDragSort() {
+      const rows = document.querySelectorAll('.server-row');
+      
+      rows.forEach(row => {
+        row.addEventListener('dragstart', function(e) {
+          draggedRow = this;
+          this.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          showDragInfo('[i] 拖拽中... 松开保存排序');
+        });
+        
+        row.addEventListener('dragend', function() {
+          this.classList.remove('dragging');
+          document.querySelectorAll('.server-row').forEach(r => r.classList.remove('drag-over'));
+          draggedRow = null;
+          hideDragInfo();
+        });
+        
+        row.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        });
+        
+        row.addEventListener('dragenter', function(e) {
+          e.preventDefault();
+          if (draggedRow && draggedRow !== this) {
+            this.classList.add('drag-over');
+          }
+        });
+        
+        row.addEventListener('dragleave', function(e) {
+          this.classList.remove('drag-over');
+        });
+        
+        row.addEventListener('drop', async function(e) {
+          e.preventDefault();
+          this.classList.remove('drag-over');
+          
+          if (!draggedRow || draggedRow === this) return;
+          
+          const tbody = this.parentElement;
+          const rows = Array.from(tbody.querySelectorAll('.server-row'));
+          const draggedIndex = rows.indexOf(draggedRow);
+          const targetIndex = rows.indexOf(this);
+          
+          if (draggedIndex < targetIndex) {
+            this.parentNode.insertBefore(draggedRow, this.nextSibling);
+          } else {
+            this.parentNode.insertBefore(draggedRow, this);
+          }
+          
+          await saveOrder();
+        });
+      });
+    }
+    
+    async function saveOrder() {
+      const rows = document.querySelectorAll('.server-row');
+      const orders = Array.from(rows).map(row => row.dataset.serverId);
+      
+      try {
+        showDragInfo('[⌛] 保存排序中...');
+        const res = await fetch('/admin/api', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({ action: 'save_order', orders }) 
+        });
+        
+        if (res.ok) {
+          showDragInfo('[✓] 排序已保存');
+          setTimeout(hideDragInfo, 1500);
+        } else {
+          alert('[ERROR] 保存排序失败');
+          hideDragInfo();
+        }
+      } catch(e) {
+        alert('[ERROR] 保存排序失败: ' + e.message);
+        hideDragInfo();
+      }
+    }
+    
     // 初始加载统计
     refreshStats();
+    initDragSort();
     
     console.log('[BOOT] Admin panel initialized');
     console.log('[INFO] Servers: ' + ${results.length});
