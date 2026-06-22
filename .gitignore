@@ -37,3 +37,4 @@ Thumbs.db
 # Cloudflare Workers
 .wrangler/
 dist/
+# trigger
