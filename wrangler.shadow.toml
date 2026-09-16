@@ -1,0 +1,33 @@
+# 影子部署配置：验证上游 2.8.6 Beta2 能否与线上同一份 D1 数据正常工作
+# - 独立 worker 名与独立域名，不影响 vps.006680.xyz
+# - 不配置 triggers（不跑定时任务，避免与线上重复巡检）
+# - 同一个 D1，因此可验证结构兼容性
+name = "cf-server-monitor-next"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+routes = [
+  { pattern = "vps-next.006680.xyz", custom_domain = true }
+]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "server-monitor-db"
+database_id = "2a771a0b-d07d-44b1-910b-a219da84e8b3"
+
+[[durable_objects.bindings]]
+name = "METRICS_BROADCASTER"
+class_name = "MetricsBroadcaster"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MetricsBroadcaster"]
+[vars]
+API_SECRET = "shadow-validation-only-000000000000"
+API_USER_NAME = "2983699759"
