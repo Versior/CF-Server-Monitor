@@ -1,15 +1,27 @@
-import { initDatabase, monthlyCleanup, dropMetricsHistoryOld, getMetricsHistory, rebuildDatabase } from './database/schema.js';
-import { checkOfflineNodes, checkExpiringServers } from './services/notification.js';
+import { initDatabase, weeklyCleanup, getMetricsHistory, clearHistory } from './database/schema.js';
+import { checkOfflineNodes, checkExpiringServers, checkResourceAlerts, checkTrafficReports } from './services/notification.js';
 import { updateDatabase } from './database/updateDatabase.js';
 import { handleAdminAPI } from './handlers/admin.js';
 import { serveFrontend } from './handlers/frontend.js';
-import { handleUpdate, handleWebSocketUpgrade } from './handlers/update.js';
+import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } from './handlers/update.js';
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
-import { loadSettings, loadSiteSettings, setDebug } from './utils/settings.js';
+import { handleTheme } from './handlers/theme.js';
+import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
+import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, simpleAuthResponse } from './middleware/auth.js';
 import { getServerDetail, getMetricsHistoryCache, setMetricsHistoryCache, getCacheDuration } from './utils/cache.js';
 import { AppError, createSuccessResponse, createUnauthorizedResponse, createBadRequestResponse, createNotFoundResponse, createErrorResponse } from './utils/errors.js';
 import { verifyTurnstileToken } from './utils/common.js';
+import { getCorsAllowedOrigins, createOptionsResponse, applyCors } from './utils/cors.js';
+import { getRemoteVersion } from './utils/version.js';
+import {
+  HISTORY_ALL_QUERY_COLUMNS
+} from './utils/historyFields.js';
+import {
+  CURRENT_VERSION,
+  DASHBOARD_LATENCY_WINDOW_HOURS,
+  DASHBOARD_LATENCY_WINDOW_POINTS
+} from './utils/config.js';
 // Durable Objects: 实时指标广播
 // 显式 import + extends，确保 wrangler 静态分析器能在入口文件直接识别此 DO 类
 import { MetricsBroadcaster as _MetricsBroadcaster }
@@ -17,8 +29,19 @@ import { MetricsBroadcaster as _MetricsBroadcaster }
 
 export class MetricsBroadcaster extends _MetricsBroadcaster {}
 
-async function getEncryptionKey(env) {
-  const secret = env.TURNSTILE_SECRET_KEY || env.API_SECRET || 'default_secret_key_for_turnstile_encryption';
+function cleanThemeAssetResponse(response) {
+  const headers = new Headers(response.headers);
+  headers.delete('X-CFSM-Theme-Asset');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+async function getEncryptionKey(env, sys) {
+  let secret = (sys && sys.jwt_secret) || env.TURNSTILE_SECRET_KEY || env.API_SECRET || 'default_secret_key_for_turnstile_encryption';
+  secret += '_turnstile';
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -30,8 +53,8 @@ async function getEncryptionKey(env) {
   return keyMaterial;
 }
 
-async function encryptCookieData(data, env) {
-  const key = await getEncryptionKey(env);
+async function encryptTurnstileData(data, env, sys) {
+  const key = await getEncryptionKey(env, sys);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoder = new TextEncoder();
   const encodedData = encoder.encode(JSON.stringify(data));
@@ -46,9 +69,9 @@ async function encryptCookieData(data, env) {
   return btoa(String.fromCharCode(...combined));
 }
 
-async function decryptCookieData(encoded, env) {
+async function decryptTurnstileData(encoded, env, sys) {
   try {
-    const key = await getEncryptionKey(env);
+    const key = await getEncryptionKey(env, sys);
     const decoded = new Uint8Array(atob(encoded).split('').map(c => c.charCodeAt(0)));
     const iv = decoded.slice(0, 12);
     const ciphertext = decoded.slice(12);
@@ -60,27 +83,34 @@ async function decryptCookieData(encoded, env) {
     const encoder = new TextDecoder();
     return JSON.parse(encoder.decode(decrypted));
   } catch (e) {
-    console.error('Cookie decryption error:', e);
+    debug('Cookie decryption error:', e);
     return null;
   }
 }
 
-async function isTurnstileCookieValid(request, env) {
-  const cookies = request.headers.get('Cookie') || '';
-  const turnstileCookie = cookies.split(';').find(c => c.trim().startsWith('turnstile_verified='));
+async function isTurnstileVerified(request, env, sys) {
+  const verifiedHeader = request.headers.get('X-Turnstile-Verified');
   
-  if (!turnstileCookie) return false;
+  if (!verifiedHeader) return false;
   
-  const encryptedData = turnstileCookie.split('=')[1];
-  const decrypted = await decryptCookieData(encryptedData, env);
-  return decrypted && decrypted.expires && Date.now() < decrypted.expires * 1000;
+  try {
+    const decrypted = await decryptTurnstileData(verifiedHeader, env, sys);
+    return decrypted && decrypted.expires && Date.now() < decrypted.expires * 1000;
+  } catch {
+    return false;
+  }
 }
 
 async function fetchHistoryData(env, request, id, hours, columns, sys = null) {
   if (!id) return createBadRequestResponse('Missing ID');
+
+  const ALLOWED_HOURS = [0.167, 0.5, 1, 6, 12, 24, 48, 96, 168];
+  if (!ALLOWED_HOURS.includes(hours)) {
+    return createBadRequestResponse('Invalid hours parameter');
+  }
   
   if (!sys) {
-    sys = await loadSettings(env.DB);
+    sys = await loadSiteSettings(env.DB);
   }
   const isLoggedIn = await checkAuth(request, env, sys);
   
@@ -88,7 +118,7 @@ async function fetchHistoryData(env, request, id, hours, columns, sys = null) {
     return simpleAuthResponse();
   }
   
-  if (hours > 1 && !isLoggedIn) {
+  if (hours > 24 && !isLoggedIn) {
     return createUnauthorizedResponse();
   }
   
@@ -98,21 +128,34 @@ async function fetchHistoryData(env, request, id, hours, columns, sys = null) {
   // 最多查询7天数据
   const clampedHours = Math.min(hours, 168);
   const cacheDuration = getCacheDuration(clampedHours);
+  const longHistoryPoints = clampedHours > 1
+    ? Number(normalizeLongHistoryPoints(sys.long_history_points))
+    : null;
 
-  const cached = getMetricsHistoryCache(id, clampedHours, columns);
+  const cached = getMetricsHistoryCache(id, clampedHours, columns, longHistoryPoints);
   if (cached && Date.now() - cached.timestamp < cacheDuration) {
-    return createSuccessResponse(cached.data, { 'X-Cache': 'HIT' });
+    const cachedData = Array.isArray(cached.data)
+      ? cached.data.map(omitNullLossProbeFields)
+      : cached.data;
+    return createSuccessResponse(cachedData, { 'X-Cache': 'HIT' });
   }
   
   let data;
   try {
-    data = await getMetricsHistory(env.DB, id, clampedHours, columns);
+    data = await getMetricsHistory(
+      env.DB,
+      id,
+      clampedHours,
+      columns,
+      server,
+      longHistoryPoints
+    );
   } catch (e) {
     const message = e && e.message ? e.message : String(e);
     if (/no such column/i.test(message)) {
-      console.warn('[History] 数据库字段缺失，可能尚未升级数据库:', message);
+      debug('[History] 数据库字段缺失，可能尚未升级数据库:', message);
       return new Response(JSON.stringify({
-        code: 'DATABASE_UPGRADE_REQUIRED'
+        message: 'databaseUpgradeRequired'
       }), {
         status: 409,
         headers: { 'Content-Type': 'application/json' }
@@ -121,29 +164,47 @@ async function fetchHistoryData(env, request, id, hours, columns, sys = null) {
     throw e;
   }
   
-  setMetricsHistoryCache(id, clampedHours, columns, data);
+  const sanitizedData = Array.isArray(data)
+    ? data.map(omitNullLossProbeFields)
+    : data;
+  setMetricsHistoryCache(id, clampedHours, columns, sanitizedData, longHistoryPoints);
   
-  return createSuccessResponse(data, { 'X-Cache': 'MISS' });
+  return createSuccessResponse(sanitizedData, { 'X-Cache': 'MISS' });
 }
 
 export default {
   async fetch(request, env, ctx) {
-    const isLocalhost = new URL(request.url).hostname === 'localhost';
-    setDebug(env.DEBUG || (isLocalhost ? 1 : 0));
+    setDebug(env.DEBUG);
 
     const url = new URL(request.url);
     const method = request.method;
     const path = url.pathname;
 
+    const corsAllowedOrigins = getCorsAllowedOrigins(env);
+    
     if (!env.API_SECRET || env.API_SECRET.length === 0) {
-      return createBadRequestResponse('API_SECRET is required');
+      const response = createBadRequestResponse('API_SECRET is required');
+      return applyCors(response, request, corsAllowedOrigins);
+    }
+    
+    if (method === 'OPTIONS') {
+      return createOptionsResponse(request, corsAllowedOrigins);
     }
 
-    if (env.ASSETS && method === 'GET') {
+    if (method === 'GET' && path === '/admin/') {
+      const target = new URL(request.url);
+      const search = target.search;
+      target.pathname = '/admin';
+      target.search = '';
+      target.hash = `admin${search}`;
+      return Response.redirect(target.toString(), 302);
+    }
+
+    if (method === 'GET' && path.startsWith('/assets/')) {
       try {
-        const res = await env.ASSETS.fetch(new Request(`http://static${path}`, request));
-        if (res.ok) {
-          return res;
+        const themeAssetResponse = await serveFrontend(request, env, await loadSettings(env.DB));
+        if (themeAssetResponse.headers.get('X-CFSM-Theme-Asset') === '1') {
+          return applyCors(cleanThemeAssetResponse(themeAssetResponse), request, corsAllowedOrigins);
         }
       } catch (e) {
       }
@@ -151,36 +212,54 @@ export default {
 
     const bypassTurnstilePaths = [
       '/admin/api',
-      '/api/config',
+      '/api/ws',
     ];
 
     const isApiRequest = path.startsWith('/api/') || path.startsWith('/admin/api');
-    if (path === '/api/config' || path === '/rebuild') {
+    if (path === '/api/config' || path === '/api/theme_options' || path === '/clearHistory') {
       await initDatabase(env.DB);
     }
 
-    let setTurnstileCookie = false;
+    // /api/config 在不带 X-Turnstile-Token 且不带 X-Turnstile-Verified 时仍然 bypass（用于初始化判断是否需要验证），
+    // 带 token 或 verified header 时则走完整验证流程，以便复用 verified 字段返回验证结果
+    const isTurnstileBypassed = (reqPath) => {
+      if (bypassTurnstilePaths.includes(reqPath)) return true;
+      if (reqPath === '/api/config' && !request.headers.get('X-Turnstile-Token') && !request.headers.get('X-Turnstile-Verified')) return true;
+      return false;
+    };
+
+    let setTurnstileVerified = false;
     let sys = null;
-    
-    if (isApiRequest && !bypassTurnstilePaths.includes(path)) {
+
+    if (isApiRequest && !isTurnstileBypassed(path)) {
       sys = await loadSiteSettings(env.DB);
       const turnstileEnabled = sys.turnstile_enabled === 'true';
       const turnstileSecretKey = sys.turnstile_secret_key || '';
       
+      // 全局 Turnstile 验证：仅 turnstile_enabled 开启时拦截所有 API 请求
+      // turnstile_login_enabled 仅在登录时验证，不在此处拦截
       if (turnstileEnabled) {
-        const hasValidCookie = await isTurnstileCookieValid(request, env);
+        const hasValidCookie = await isTurnstileVerified(request, env, sys);
         
         if (!hasValidCookie) {
           const turnstileToken = request.headers.get('X-Turnstile-Token');
           const isVerified = await verifyTurnstileToken(turnstileToken, turnstileSecretKey);
           
           if (!isVerified) {
-            return createErrorResponse(new AppError('Turnstile verification failed', 403));
+            const response = createErrorResponse(new AppError('Turnstile verification failed', 403));
+            return applyCors(response, request, corsAllowedOrigins);
           }
           
-          setTurnstileCookie = true;
+          setTurnstileVerified = true;
         }
       }
+    }
+
+    async function ensureSiteSettings() {
+      if (!sys) {
+        sys = await loadSiteSettings(env.DB);
+      }
+      return sys;
     }
 
     async function ensureFullSettings() {
@@ -190,6 +269,7 @@ export default {
 
     const routes = [
       { method: 'POST', path: '/update', handler: () => handleUpdate(request, env, ctx) },
+      { method: 'GET', path: '/update', handler: () => handleUpdateWebSocketUpgrade(request, env) },
       { method: 'GET', path: '/__do/health', handler: async () => {
         if (!env.METRICS_BROADCASTER) {
           return createSuccessResponse({ ok: false, reason: 'DO not bound' });
@@ -203,23 +283,105 @@ export default {
         }
       }},
       { method: 'GET', path: '/api/config', handler: async () => {
-        await ensureFullSettings();
+        await ensureSiteSettings();
+        const appearanceOptions = await loadAppearanceOptions(env.DB);
         const turnstileEnabled = sys.turnstile_enabled === 'true';
-        let cookieAuth = false;
-        
+        const turnstileLoginEnabled = sys.turnstile_login_enabled === 'true';
+        let verified = false;
+        let turnstileVerified = null;
+
         if (turnstileEnabled) {
-          cookieAuth = await isTurnstileCookieValid(request, env);
+          verified = await isTurnstileVerified(request, env, sys);
+          if (setTurnstileVerified) {
+            verified = true;
+            const expires = Math.floor(Date.now() / 1000) + 3600;
+            const cookieData = { expires, verified: true, timestamp: Date.now() };
+            turnstileVerified = await encryptTurnstileData(cookieData, env, sys);
+          }
         }
-        
+
+        const isLoggedIn = await checkAuth(request, env, sys);
+        const remoteVersion = isLoggedIn ? await getRemoteVersion() : null;
+
         return createSuccessResponse({
+          version: CURRENT_VERSION,
+          ...(isLoggedIn ? {
+            last_workers_version: remoteVersion?.workers || null,
+            last_agent_version: remoteVersion?.agent || null
+          } : {}),
+          is_public: sys.is_public === 'true',
+          authorization: isLoggedIn,
           turnstile_enabled: turnstileEnabled,
+          turnstile_login_enabled: turnstileEnabled || turnstileLoginEnabled,
           turnstile_site_key: sys.turnstile_site_key || '',
-          cookie_auth: cookieAuth,
-          show_long_history: sys.show_long_history === 'true'
+          custom_ct_name: sys.custom_ct_name || '电信',
+          custom_cu_name: sys.custom_cu_name || '联通',
+          custom_cm_name: sys.custom_cm_name || '移动',
+          custom_bd_name: sys.custom_bd_name || 'BGP',
+          node_1_name: sys.node_1_name || 'Node 1',
+          node_2_name: sys.node_2_name || 'Node 2',
+          node_3_name: sys.node_3_name || 'Node 3',
+          node_4_name: sys.node_4_name || 'Node 4',
+          site_title: appearanceOptions.site_title || '',
+          display_mode: appearanceOptions.display_mode || 'bar',
+          preferred_theme: appearanceOptions.preferred_theme || 'auto',
+          default_language: appearanceOptions.default_language || 'auto',
+          theme_options: appearanceOptions.theme_options || {},
+          verified: verified,
+          turnstile_verified: turnstileVerified,
+          frontend_ws_timeout_minutes: Number(normalizeFrontendWsTimeoutMinutes(sys.frontend_ws_timeout_minutes)),
+          long_history_points: Number(normalizeLongHistoryPoints(sys.long_history_points)),
+          latency_window: {
+            points: DASHBOARD_LATENCY_WINDOW_POINTS,
+            hours: DASHBOARD_LATENCY_WINDOW_HOURS
+          }
+        });
+      }},
+      { method: 'GET', path: '/theme', handler: async () => {
+        const themeResult = await handleTheme()
+        if (!themeResult.ok) {
+          return new Response(JSON.stringify({
+            error: themeResult.error || 'themeStoreProxyFailed',
+            code: 502,
+            fallback: 'client'
+          }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+
+        return createSuccessResponse(themeResult.themeStore, {
+          'X-CFSM-Theme-Source': themeResult.cached ? 'cache' : 'raw'
+        })
+      }},
+      { method: 'POST', path: '/api/theme_options', handler: async () => {
+        await ensureSiteSettings();
+        if (!await checkAuth(request, env, sys)) {
+          return simpleAuthResponse();
+        }
+
+        let data;
+        try {
+          data = await request.json();
+        } catch (_) {
+          return createBadRequestResponse('invalidJson');
+        }
+
+        const themeOptions = data?.theme_options;
+        if (!isValidThemeOptions(themeOptions)) {
+          return createBadRequestResponse('invalidThemeOptionsFormat');
+        }
+
+        await saveThemeOptions(env.DB, themeOptions);
+        sys.theme_options = themeOptions;
+        return createSuccessResponse({
+          success: true,
+          theme_options: themeOptions,
+          message: 'updateSuccess'
         });
       }},
       { method: 'GET', path: '/api/server', handler: async () => {
-        await ensureFullSettings();
+        await ensureSiteSettings();
         return handleServerAPI(request, env, sys);
       }},
       { method: 'GET', path: '/api/servers', handler: async () => {
@@ -229,30 +391,31 @@ export default {
       { method: 'GET', path: '/api/ws', handler: async () => handleWebSocketUpgrade(request, env) },
 
       { method: 'GET', path: '/api/history/all', handler: async () => {
-        await ensureFullSettings();
+        await ensureSiteSettings();
         const id = url.searchParams.get('id');
         const hours = parseFloat(url.searchParams.get('hours') || '24');
-        const allColumns = 'cpu, gpu, gpu_info, ram, disk_total, disk_used, processes, net_in_speed, net_out_speed, tcp_conn, udp_conn, ping_ct, ping_cu, ping_cm, ping_bd, loss_ct, loss_cu, loss_cm, loss_bd, swap_total, swap_used, load_avg';
+        const allColumns = HISTORY_ALL_QUERY_COLUMNS.join(', ');
+        // 后续版本可以删掉region 字段，用于升级数据库提示
         return fetchHistoryData(env, request, id, hours, allColumns, sys);
       }},
       { method: 'POST', path: '/admin/api', handler: async () => {
-        await ensureFullSettings();
-        return handleAdminAPI(request, env, sys);
+        await ensureSiteSettings();
+        return handleAdminAPI(request, env, sys, ensureFullSettings, ctx);
       }},
       { method: 'POST', path: '/updateDatabase', handler: async () => {
-        await ensureFullSettings();
+        await ensureSiteSettings();
         if (!await checkAuth(request, env, sys)) {
           return simpleAuthResponse();
         }
         const result = await updateDatabase(env.DB);
         return createSuccessResponse(result);
       }},
-      { method: 'POST', path: '/rebuild', handler: async () => {
-        await ensureFullSettings();
+      { method: 'POST', path: '/clearHistory', handler: async () => {
+        await ensureSiteSettings();
         if (!await checkAuth(request, env, sys)) {
           return simpleAuthResponse();
         }
-        const result = await rebuildDatabase(env.DB);
+        const result = await clearHistory(env.DB);
         return createSuccessResponse(result);
       }}
     ];
@@ -260,50 +423,78 @@ export default {
     for (const route of routes) {
       if (route.method === method && route.path === path) {
         const response = await route.handler();
-        
-        if (setTurnstileCookie && response) {
+
+        // WebSocket 升级响应直接原样返回，不能修改 response 对象
+        if (response.status === 101) {
+          return response;
+        }
+
+        if (setTurnstileVerified) {
           const expires = Math.floor(Date.now() / 1000) + 3600;
           const cookieData = { expires, verified: true, timestamp: Date.now() };
-          const encryptedCookie = await encryptCookieData(cookieData, env);
-          
-          const newHeaders = new Headers(response.headers);
-          newHeaders.set('Set-Cookie', `turnstile_verified=${encryptedCookie}; path=/; max-age=3600; SameSite=Lax; HttpOnly`);
-          
-          const newResponse = new Response(response.body, {
+          const encryptedData = await encryptTurnstileData(cookieData, env, sys);
+
+          const finalHeaders = new Headers(response.headers);
+          finalHeaders.set('Access-Control-Allow-Origin', request.headers.get('Origin') || '');
+          finalHeaders.set('Access-Control-Allow-Credentials', 'true');
+          finalHeaders.set('Vary', 'Origin');
+
+          return new Response(response.body, {
             status: response.status,
-            headers: newHeaders
+            statusText: response.statusText,
+            headers: finalHeaders
           });
-          return newResponse;
         }
-        
-        return response;
+
+        return applyCors(response, request, corsAllowedOrigins);
       }
     }
 
-    await ensureFullSettings();
-    return serveFrontend(request, env, sys);
+    const fullSettings = await loadSettings(env.DB);
+    const frontendResponse = await serveFrontend(request, env, fullSettings);
+    return applyCors(frontendResponse, request, corsAllowedOrigins);
   },
 
   async scheduled(event, env, ctx) {
     const cron = event.cron;
-    console.debug(`[Cron] 定时任务触发: ${cron}`);
+    debug(`[Cron] 定时任务触发: ${cron}`);
+
+    const now = new Date();
+    const day = now.getUTCDay();
+    const hour = now.getUTCHours();
+    const minute = now.getUTCMinutes();
     
-    if (cron === '* * 1 * *') {
-      console.debug('[Cron] 开始执行每月数据清理任务（表轮换）');
-      await monthlyCleanup(env.DB);
-      console.debug('[Cron] 每月数据清理任务完成');
-    } else if (cron === '* * 8 * *') {
-      console.debug('[Cron] 开始执行每月8号清理旧表任务');
-      await dropMetricsHistoryOld(env.DB);
-      console.debug('[Cron] 每月8号清理旧表任务完成');
-    } else if (cron === '*/1 * * * *') {
-      console.debug('[Cron] 开始执行离线节点检测');
-      await checkOfflineNodes(env.DB);
-      console.debug('[Cron] 离线节点检测完成');
-    } else if (cron === '0 12 * * *') {
-      console.debug('[Cron] 开始执行服务器到期检测');
-      await checkExpiringServers(env.DB);
-      console.debug('[Cron] 服务器到期检测完成');
+    if (cron === '*/1 * * * *') {
+      // Traffic reports must still run during the Sunday table-rotation window.
+      await checkTrafficReports(env.DB, { scheduled: true, staggered: true, now: now.getTime() });
+      if (day === 0 && hour === 0 && minute < 5) {
+        debug('[Cron] 每周日0:00-0:05表轮换期间，跳过离线节点检测');
+      } else {
+        debug('[Cron] 开始执行离线节点检测');
+        await checkOfflineNodes(env.DB);
+        debug('[Cron] 离线节点检测完成');
+        debug('[Cron] 开始执行资源负载告警检测');
+        await checkResourceAlerts(env);
+        debug('[Cron] 资源负载告警检测完成');
+      }
+    } else if (cron === '0 * * * *') {
+      if (day === 0 && hour === 0) {
+        debug('[Cron] 开始执行每周数据清理任务（表轮换）');
+        await weeklyCleanup(env.DB);
+        debug('[Cron] 每周数据清理任务完成');
+      }
+      debug('[Cron] 检查是否到达服务器到期检测时间');
+      await checkExpiringServers(env.DB, { scheduled: true, now: now.getTime() });
+    }else if(env.DEBUG == 1){
+      if (cron === '0 0 * * 0') {
+        debug('[Cron DEBUG] 开始执行每周数据清理任务（表轮换）');
+        await weeklyCleanup(env.DB);
+        debug('[Cron DEBUG] 每周数据清理任务完成');
+      } else if (cron === '0 12 * * *') {
+        debug('[Cron DEBUG] 开始执行服务器到期检测');
+        await checkExpiringServers(env.DB);
+        debug('[Cron DEBUG] 服务器到期检测完成');
+      }
     }
   }
 };
