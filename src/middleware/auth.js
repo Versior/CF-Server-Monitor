@@ -1,5 +1,13 @@
 const ALGORITHM = { name: 'HMAC', hash: 'SHA-256' };
-import { md5Hash } from '../utils/common.js';
+import { verifyPasswordHash } from '../utils/common.js';
+import { isValidJwtSecret } from '../utils/settings.js';
+
+export const AUTH_COOKIE_NAME = 'cfsm_auth';
+// 与登录态同步出现的标记 cookie，供 Cloudflare 安全规则放行已登录用户使用。
+// 注意：它是全员共享的静态值，只能当作降噪标记，不能当作访问凭证。
+export const UA_COOKIE_NAME = 'cfsm_ua';
+export const AUTH_COOKIE_MAX_AGE = 604800;
+const TOKEN_QUERY_KEYS = ['token', 'auth_token', 'ws_token'];
 
 async function generateKeyFromSecret(secret) {
   const encoder = new TextEncoder();
@@ -61,43 +69,39 @@ async function verifyJwt(token, secret) {
 }
 
 function getJwtSecret(env, sys) {
-  if (sys && sys.jwt_secret && sys.jwt_secret.length >= 32) {
+  if (isValidJwtSecret(sys?.jwt_secret)) {
     return sys.jwt_secret;
   }
-  
+
   const fallback = env.API_SECRET || 'default_jwt_secret_for_server_monitor';
-  const padded = fallback.padEnd(32, 'x');
-  
-  return padded.substring(0, 64);
+  return fallback.padEnd(32, 'x').substring(0, 64);
 }
 
-export async function generateToken(env, sys) {
-  const payload = {
-    sub: 'admin',
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + 604800
-  };
-  
-  const secret = getJwtSecret(env, sys);
-  return signJwt(payload, secret);
-}
-
-export async function checkAuth(request, env, sys) {
-  const authHeader = request.headers.get('Authorization');
-  if (!authHeader) {
-    return false;
+function getCookieValue(request, name) {
+  const cookie = request?.headers?.get('Cookie') || '';
+  const prefix = `${name}=`;
+  for (const part of cookie.split(';')) {
+    const item = part.trim();
+    if (!item.startsWith(prefix)) continue;
+    try {
+      return decodeURIComponent(item.slice(prefix.length));
+    } catch (_) {
+      return item.slice(prefix.length);
+    }
   }
+  return '';
+}
 
+function extractBearerToken(request) {
+  const authHeader = request?.headers?.get('Authorization') || '';
   const parts = authHeader.trim().split(/\s+/);
-  const scheme = parts[0];
-  const token = parts[1];
+  return parts[0] === 'Bearer' && parts[1] ? parts[1] : '';
+}
 
-  if (scheme !== 'Bearer' || !token) {
-    return false;
-  }
-
+async function verifyToken(token, env, sys) {
+  if (!token) return false;
   const secret = getJwtSecret(env, sys);
-  
+
   try {
     const payload = await verifyJwt(token, secret);
     return payload !== null;
@@ -107,36 +111,91 @@ export async function checkAuth(request, env, sys) {
   }
 }
 
-export async function validateCredentials(request, env, sys) {
+export async function generateToken(env, sys) {
+  const payload = {
+    sub: 'admin',
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 604800
+  };
+
+  const secret = getJwtSecret(env, sys);
+  return signJwt(payload, secret);
+}
+
+export async function checkAuth(request, env, sys) {
+  if (await verifyToken(extractBearerToken(request), env, sys)) {
+    return true;
+  }
+  return verifyToken(getCookieValue(request, AUTH_COOKIE_NAME), env, sys);
+}
+
+export async function checkWebSocketAuth(request, env, sys) {
+  if (await checkAuth(request, env, sys)) {
+    return true;
+  }
+
+  let url;
   try {
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader) {
-      return false;
+    url = new URL(request.url);
+  } catch (_) {
+    return false;
+  }
+
+  for (const key of TOKEN_QUERY_KEYS) {
+    if (await verifyToken(url.searchParams.get(key), env, sys)) {
+      return true;
     }
+  }
+  return false;
+}
 
-    const parts = authHeader.trim().split(/\s+/);
-    const scheme = parts[0];
-    const encoded = parts[1];
+export function buildAuthCookie(request, token, maxAge = AUTH_COOKIE_MAX_AGE) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${AUTH_COOKIE_NAME}=${encodeURIComponent(token || '')}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+}
 
-    if (scheme !== 'Basic' || !encoded) {
-      return false;
-    }
+export function buildClearAuthCookie(request) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${AUTH_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secure}`;
+}
 
-    let decoded;
-    try {
-      decoded = atob(encoded);
-    } catch (e) {
-      return false;
-    }
+// ua 允许分号、逗号、空格等字符，必须编码后再写入 Cookie 头。
+export function buildUaCookie(request, ua, maxAge = AUTH_COOKIE_MAX_AGE) {
+  const value = encodeURIComponent(String(ua ?? '').trim());
+  if (!value) return '';
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${UA_COOKIE_NAME}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+}
 
-    const idx = decoded.indexOf(':');
-    if (idx === -1) {
-      return false;
-    }
+export function buildClearUaCookie(request) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${UA_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secure}`;
+}
 
-    const username = decoded.slice(0, idx);
-    const password = decoded.slice(idx + 1);
+// 第三方 App / iOS 小组件的共享口令头。它只放宽只读可见范围（私有站点、隐藏服务器），
+// 不参与后台管理鉴权，避免把「能看」变成「能改」。
+export const APP_PASSWORD_HEADER = 'X-App-Password';
 
+// 常量时间比较，避免通过响应耗时逐位试探口令。
+function constantTimeEquals(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+export function hasAppPasswordAccess(request, sys) {
+  const expected = String(sys?.app_password ?? '');
+  if (!expected) return false;
+  const provided = String(request?.headers?.get(APP_PASSWORD_HEADER) ?? '').trim();
+  if (!provided) return false;
+  return constantTimeEquals(provided, expected);
+}
+
+export async function validateCredentials(username, password, env, sys) {
+  try {
     const validUsername = (sys && sys.username && sys.username.length > 0)
       ? sys.username
       : (typeof env.API_USER_NAME === 'string' && env.API_USER_NAME.length > 0)
@@ -144,19 +203,27 @@ export async function validateCredentials(request, env, sys) {
         : 'admin';
 
     if (sys && sys.password && sys.password.length > 0) {
-      const hashedPassword = await md5Hash(password);
-      return username === validUsername && hashedPassword === sys.password;
+      if (username !== validUsername) {
+        return { valid: false, needsPasswordUpgrade: false };
+      }
+
+      const result = await verifyPasswordHash(password, sys.password);
+      return {
+        valid: result.valid,
+        needsPasswordUpgrade: result.needsRehash === true
+      };
     }
 
-    return (
+    const valid = (
       typeof env.API_SECRET === 'string' &&
       env.API_SECRET.length > 0 &&
       username === validUsername &&
       password === env.API_SECRET
     );
+    return { valid, needsPasswordUpgrade: false };
   } catch (e) {
     console.error('Credential validation error:', e);
-    return false;
+    return { valid: false, needsPasswordUpgrade: false };
   }
 }
 

@@ -2,19 +2,17 @@
  * 缓存管理模块
  * 集中管理所有内存缓存，包括：
  * - 服务器列表缓存
- * - 服务器详情缓存（统一替代 SELECT 1/id/*）
+ * - 服务器详情（复用服务器列表缓存）
  * - 最新指标缓存
  * - 历史指标缓存
  * - 站点设置缓存
  */
 
-import { clearSiteSettingsCache } from './settings.js';
+import { clearAppearanceSettingsCache, clearSiteSettingsCache, debug } from './settings.js';
+import { SERVER_DETAIL_CACHE_MAX_ENTRIES, METRICS_HISTORY_CACHE_MAX_ENTRIES } from './config.js';
 
-const SERVERS_LIST_TTL = 60 * 1000;
+const SERVERS_LIST_TTL = 120 * 1000;
 let serversListCache = null;
-
-const SERVER_DETAIL_TTL = 5 * 60 * 1000;
-const serverDetailCache = new Map();
 
 const LATEST_ALL_TTL = 30 * 1000;
 let latestAllCache = null;
@@ -22,94 +20,128 @@ let latestAllCacheTime = 0;
 
 const metricsHistoryCache = new Map();
 
+const serverDetailCache = new Map();
+
+// 超限时按写入顺序淘汰，避免额外定时任务。
+function setCacheEntry(cache, key, entry, maxEntries) {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > maxEntries) {
+    cache.delete(cache.keys().next().value);
+  }
+}
+
 export function getCacheDuration(hours) {
-  if (hours >= 120) {
+  if (hours >= 48) {
+    return 20 * 60 * 1000;
+  }else if (hours >= 24) {
+    return 15 * 60 * 1000;
+  }else if (hours >= 12) {
     return 10 * 60 * 1000;
-  } else if (hours >= 60) {
+  } else if (hours >= 6) {
     return 5 * 60 * 1000;
-  } else if (hours >= 30) {
-    return 3 * 60 * 1000;
+  } else if (hours >= 1) {
+    return 2 * 60 * 1000;
   } else {
     return 1 * 60 * 1000;
   }
 }
 
+function filterServersByHidden(servers, includeHidden) {
+  if (!servers || servers.length === 0) return [];
+  if (includeHidden) {
+    return [...servers];
+  }
+  return servers.filter(s => s.is_hidden !== 1 && s.is_hidden !== '1');
+}
+
 export async function getAllServers(db, includeHidden = true) {
-  const cacheKey = includeHidden ? 'all' : 'visible';
   const now = Date.now();
   
-  if (serversListCache && serversListCache.cacheKey === cacheKey && now - serversListCache.time < SERVERS_LIST_TTL) {
-    return serversListCache.data;
+  if (serversListCache && now - serversListCache.time < SERVERS_LIST_TTL) {
+    debug('服务器列表缓存命中');
+    return filterServersByHidden(serversListCache.data, includeHidden);
   }
 
   try {
-    let query = 'SELECT * FROM servers ORDER BY sort_order ASC';
-    if (!includeHidden) {
-      query = "SELECT * FROM servers WHERE (is_hidden != '1' AND is_hidden != 1) ORDER BY sort_order ASC";
-    }
-    const { results } = await db.prepare(query).all();
-    serversListCache = { data: results, time: now, cacheKey };
-    return results;
+    const { results } = await db.prepare('SELECT * FROM servers ORDER BY sort_order ASC').all();
+    serversListCache = { data: results, time: now };
+    debug('服务器列表缓存更新');
+    return filterServersByHidden(results, includeHidden);
   } catch (e) {
-    console.error('获取服务器列表失败:', e);
-    return serversListCache && serversListCache.cacheKey === cacheKey ? serversListCache.data : [];
+    debug('获取服务器列表失败:', e);
+    return filterServersByHidden(serversListCache?.data, includeHidden);
   }
 }
 
 export function clearServersListCache() {
   serversListCache = null;
+  serverDetailCache.clear();
 }
 
-/**
- * 获取单个服务器详情（带缓存）
- * @param {object} db - 数据库实例
- * @param {string} id - 服务器 ID
- * @param {boolean} [includeHidden=false] - 是否包含隐藏服务器
- * @returns {object|null} 服务器对象，不存在返回 null
- */
+export function clearServerDetailCache() {
+  serverDetailCache.clear();
+}
+
+// 按 id 就地打补丁更新已缓存的服务器详情字段（不创建条目、不清全表）
+// 用于运行时状态列（如 traffic_alert_state）写回后刷新缓存，避免 TTL 内读到旧值重复触发。
+export function patchServerDetailCache(id, fields) {
+  const entry = serverDetailCache.get(id);
+  if (entry && entry.data) Object.assign(entry.data, fields);
+}
+
 export async function getServerDetail(db, id, includeHidden = false) {
   const now = Date.now();
   const cached = serverDetailCache.get(id);
-
-  if (cached && now - cached.timestamp < SERVER_DETAIL_TTL) {
-    const server = cached.data;
-    if (!includeHidden && (server.is_hidden === '1' || server.is_hidden === 1)) {
-      return null;
+  
+  if (cached) {
+    if (now - cached.time < SERVERS_LIST_TTL) {
+      debug('服务器详情缓存命中');
+      const server = cached.data;
+      
+      if (!server) {
+        return null;
+      }
+      
+      if (!includeHidden && (server.is_hidden === 1 || server.is_hidden === '1')) {
+        return null;
+      }
+      
+      return { ...server };
     }
-    return server;
+    
+    // 过期详情保留为 D1 异常时的兜底值，直到成功刷新、主动清理或容量淘汰。
+  }
+  
+  let server;
+  let degraded = false;
+  try {
+    server = await db.prepare('SELECT * FROM servers WHERE id = ?').bind(id).first();
+  } catch (e) {
+    // 与 getAllServers 一致：D1 异常时回退上一次已知结果，不把基础设施抖动放大成业务失败。
+    if (!cached) throw e;
+    debug('服务器详情查询失败，回退缓存值:', e);
+    server = cached.data;
+    degraded = true;
   }
 
-  let query = 'SELECT * FROM servers WHERE id = ?';
-  if (!includeHidden) {
-    query += " AND (is_hidden != '1' AND is_hidden != 1)";
+  if (!degraded) {
+    setCacheEntry(serverDetailCache, id, {
+      data: server,
+      time: now
+    }, SERVER_DETAIL_CACHE_MAX_ENTRIES);
+    debug('服务器详情缓存更新');
   }
-
-  const server = await db.prepare(query).bind(id).first();
-
-  if (server) {
-    serverDetailCache.set(id, { data: server, timestamp: now });
+  
+  if (!server) {
+    return null;
   }
-
-  return server;
-}
-
-/**
- * 检查服务器是否存在（复用服务器详情缓存）
- * @param {object} db - 数据库实例
- * @param {string} id - 服务器 ID
- * @returns {boolean} 服务器是否存在
- */
-export async function checkServerExists(db, id) {
-  const server = await getServerDetail(db, id, true);
-  return !!server;
-}
-
-/**
- * 清除单个服务器的详情缓存
- * @param {string} id - 服务器 ID
- */
-export function clearServerDetailCache(id) {
-  serverDetailCache.delete(id);
+  
+  if (!includeHidden && (server.is_hidden === 1 || server.is_hidden === '1')) {
+    return null;
+  }
+  
+  return { ...server };
 }
 
 /**
@@ -130,33 +162,39 @@ export function clearLatestMetricsCache() {
   latestAllCacheTime = 0;
 }
 
-function getCacheKey(serverId, hours, columns) {
+function getCacheKey(serverId, hours, columns, samplePoints = null) {
   const sortedColumns = columns.split(',').sort().join(',');
-  return `${serverId}:${hours}:${sortedColumns}`;
+  const sampleSuffix = samplePoints ? `:points=${samplePoints}` : '';
+  return `${serverId}:${hours}:${sortedColumns}${sampleSuffix}`;
 }
 
-export function getMetricsHistoryCache(serverId, hours, columns) {
-  const key = getCacheKey(serverId, hours, columns);
-  return metricsHistoryCache.get(key);
-}
-
-export function setMetricsHistoryCache(serverId, hours, columns, data) {
-  const key = getCacheKey(serverId, hours, columns);
-  metricsHistoryCache.set(key, { data, timestamp: Date.now() });
-}
-
-export function clearMetricsHistoryCache(serverId) {
-  for (const key of metricsHistoryCache.keys()) {
-    if (key.startsWith(`${serverId}:`)) {
-      metricsHistoryCache.delete(key);
-    }
+export function getMetricsHistoryCache(serverId, hours, columns, samplePoints = null) {
+  const key = getCacheKey(serverId, hours, columns, samplePoints);
+  const cached = metricsHistoryCache.get(key);
+  if (cached && Date.now() >= cached.expiresAt) {
+    metricsHistoryCache.delete(key);
+    return undefined;
   }
+  return cached;
+}
+
+export function setMetricsHistoryCache(serverId, hours, columns, data, samplePoints = null) {
+  const key = getCacheKey(serverId, hours, columns, samplePoints);
+  const now = Date.now();
+  for (const [cachedKey, cached] of metricsHistoryCache) {
+    if (now >= cached.expiresAt) metricsHistoryCache.delete(cachedKey);
+  }
+  setCacheEntry(metricsHistoryCache, key, {
+    data,
+    timestamp: now,
+    expiresAt: now + getCacheDuration(hours)
+  }, METRICS_HISTORY_CACHE_MAX_ENTRIES);
 }
 
 export function clearAllCaches() {
   clearServersListCache();
-  serverDetailCache.clear();
   clearLatestMetricsCache();
   metricsHistoryCache.clear();
   clearSiteSettingsCache();
+  clearAppearanceSettingsCache();
 }
