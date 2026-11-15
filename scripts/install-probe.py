@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 AGENT_CONFIG = Path('/etc/config/cf-probe/config.conf')
@@ -21,7 +21,7 @@ AGENT_BINARY = Path('/usr/local/bin/cf-probe')
 ROUTE_DIR = Path('/opt/cfsm-route-detector')
 ROUTE_CONFIG = Path('/etc/cfsm-route-detector.json')
 SYSTEMD_DIR = Path('/etc/systemd/system')
-SOURCE = 'https://raw.githubusercontent.com/Versior/CF-Server-Monitor/45a8b4b74fe2a97837916098da8b3e375832fe96/scripts'
+SOURCE = 'https://raw.githubusercontent.com/Versior/CF-Server-Monitor/3cdcf896f0e9c0365d4674f09b289d60fd9dadfb/scripts'
 AGENT_VERSION = 'v1.1.3'
 NEXTTRACE_VERSION = 'v1.7.6'
 HASHES = {
@@ -36,6 +36,8 @@ def download(url, path, digest=None):
     try:
         with urlopen(url, timeout=180) as response, path.open('wb') as output:
             shutil.copyfileobj(response, output)
+    except HTTPError as error:
+        raise RuntimeError(f'下载 {path.name} 失败（HTTP {error.code}），请检查文件发布地址') from None
     except (URLError, OSError):
         raise RuntimeError(f'下载 {path.name} 失败，请检查 VPS 到 GitHub 的网络') from None
     if digest and hashlib.sha256(path.read_bytes()).hexdigest() != digest:
