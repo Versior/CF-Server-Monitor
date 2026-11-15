@@ -111,6 +111,8 @@
       </div>
     </div>
 
+    <RouteDetectionPanel :report="server.route_report" />
+
     <div class="charts-container">
       <div class="chart-card" :class="{ 'full-width': isChartExpanded('cpu') }">
         <div class="chart-card-header">
@@ -396,6 +398,7 @@
 </template>
 
 <script setup>
+import RouteDetectionPanel from '../components/RouteDetectionPanel.vue'
 import { ref, computed, inject, onMounted, onUnmounted, watch, nextTick, h } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import TerminalHeader from '../components/TerminalHeader.vue'

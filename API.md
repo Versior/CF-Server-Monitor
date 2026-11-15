@@ -2288,3 +2288,8 @@ curl -X POST https://status.example.com/admin/api \
 ***
 
 > 文档同步：与源码 `src/index.js`、`src/middleware/auth.js`、`src/handlers/{admin,dashboard,frontend,theme,update}.js`、`src/durable/MetricsBroadcaster.js`、`src/utils/{settings,errors,cors,csp,cache,metrics,common,serverBilling,version,latestReportCache,agentConfig,autoDiscovery}.js`、`src/database/{schema,updateDatabase}.js` 一一对应；后续修改任一文件时，请同步更新本文件。
+
+
+## 自动线路检测
+
+新增 `GET /update/routes?id=<server-id>`（读取有效三网检测目标）与 `POST /update/routes`（上传 ASN 证据），均要求 Agent 上报凭据的 Bearer 认证。公开服务器接口增加可为空的 `route_report` 对象，包含检测时间、有效期和各方向结果。手动标签不被写入或覆盖。完整字段、数据库升级与 VPS 安装见 [自动线路检测](docs/route-detection.md)。

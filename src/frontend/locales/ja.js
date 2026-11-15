@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "経路の自動検出",
+  routeDetected: "検出済み",
+  routePartial: "経路未完了",
+  routeUnknown: "未識別",
+  routeFailed: "検出失敗",
+  routeDisabled: "無効",
+  routeExpired: "期限切れ",
+  routeScope: "設定した宛先への片方向の ASN 経路です。GIA/GT や逆方向を保証しません。",
   theme: 'テーマ',
   themeAuto: 'システムに従う',
   themeDark: 'ダーク',

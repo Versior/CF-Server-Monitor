@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "Détection des routes",
+  routeDetected: "Identifié",
+  routePartial: "Chemin incomplet",
+  routeUnknown: "Non identifié",
+  routeFailed: "Échec de détection",
+  routeDisabled: "Désactivé",
+  routeExpired: "Résultat expiré",
+  routeScope: "Chemin ASN vers la cible configurée ; ne certifie ni GIA/GT ni le sens inverse.",
   theme: 'Thème',
   themeAuto: 'Suivre le système',
   themeDark: 'Sombre',

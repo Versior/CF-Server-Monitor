@@ -64,6 +64,7 @@ export async function addServerColumns(db) {
       sort_order: "INTEGER DEFAULT 0",
       region: "TEXT DEFAULT ''",
       tags: "TEXT DEFAULT ''",
+      route_report: "TEXT DEFAULT ''",
       note: "TEXT DEFAULT ''",
       billing_cycle: "TEXT DEFAULT 'month'",
       auto_renewal: "TEXT DEFAULT '0'",

@@ -1,9 +1,10 @@
-import { computed } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { formatBytes, getFlagRegionCode, isServerOnline } from '../utils/api'
 import { getPublicAssetUrl } from '../utils/config'
 import { currentLang, useTranslation } from '../utils/i18n'
 import { LATENCY_WINDOW, PING } from '../utils/constants'
 import { formatBillingPrice } from '../utils/server.js'
+import { automaticRouteTags } from '../utils/routeDetection.js'
 
 export const DEFAULT_SERVER_CARD_CONFIG = {
   show_price: true,
@@ -157,11 +158,27 @@ export function useServerCardData(props) {
     }
   })
 
-  const tagList = computed(() => String(props.server.tags || '')
+  const routeClock = ref(Date.now())
+  const routeTimer = { id: null }
+  watch(() => props.server.route_report, report => {
+    clearTimeout(routeTimer.id)
+    routeClock.value = Date.now()
+    if (report && report.expires_at > routeClock.value) {
+      routeTimer.id = setTimeout(() => { routeClock.value = Date.now() }, report.expires_at - routeClock.value)
+    }
+  }, { immediate: true })
+  onUnmounted(() => clearTimeout(routeTimer.id))
+  const tagList = computed(() => {
+    const manual = String(props.server.tags || '')
     .split(',')
     .map(tag => tag.trim())
     .filter(Boolean)
-  )
+    return manual.length ? manual : automaticRouteTags(props.server.route_report, {
+      ct: props.sysConfig.custom_ct_name || trans.value.pingCt,
+      cu: props.sysConfig.custom_cu_name || trans.value.pingCu,
+      cm: props.sysConfig.custom_cm_name || trans.value.pingCm
+    }, routeClock.value)
+  })
   const tagColorClass = (index) => `tag-color-${index % 6}`
   const hasPublicIPv4 = computed(() => String(props.server.ip_v4 ?? '').trim() === '1')
   const hasPublicIPv6 = computed(() => String(props.server.ip_v6 ?? '').trim() === '1')

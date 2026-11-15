@@ -1,0 +1,129 @@
+import test, { after } from 'node:test';
+import assert from 'node:assert/strict';
+import { Miniflare } from 'miniflare';
+import { initDatabase } from '../src/database/schema.js';
+import { addServerColumns } from '../src/database/updateDatabase.js';
+import { handleRouteDetection } from '../src/handlers/routeDetection.js';
+import { handleServerAPI, handleServersAPI } from '../src/handlers/dashboard.js';
+import { clearAllCaches, getAllServers } from '../src/utils/cache.js';
+import { normalizeRouteReport } from '../src/utils/routeDetection.js';
+import { automaticRouteTags } from '../src/frontend/utils/routeDetection.js';
+
+const evidence = (overrides = {}) => ({ carrier: 'ct', family: 4, status: 'ok', completed: true, hops: [[64500], [], [4809], [4134]], ...overrides });
+const report = (routes = [evidence()]) => ({ id: 'routes-demo', routes });
+
+test('ASN evidence identifies mixed backbone networks without asserting GIA or GT', () => {
+  const result = normalizeRouteReport({ ...report(), secret: 'FAKE_TEST_VALUE', ip: '203.0.113.8' }, 1000);
+  assert.deepEqual(result.report.routes[0].networks, ['CN2', '163']);
+  assert.equal(result.report.routes[0].status, 'detected');
+  assert.deepEqual(automaticRouteTags(result.report, { ct: 'CT' }, 1001), ['CT CN2 / 163']);
+  assert.doesNotMatch(JSON.stringify(result.report), /GIA|GT|203\.0\.113|FAKE_TEST_VALUE/);
+  assert.deepEqual(result.report.routes[0].hops[1], []);
+});
+
+test('IPv6, CMI, 9929 and incomplete/unknown/failed evidence keep distinct states', () => {
+  const result = normalizeRouteReport(report([
+    evidence({ carrier: 'cu', family: 6, hops: [[9929], [4837]] }),
+    evidence({ carrier: 'cm', hops: [[58453], [58807], [9808]] }),
+    evidence({ completed: false }),
+    evidence({ family: 6, hops: [[64500]] }),
+    evidence({ carrier: 'cu', completed: false, status: 'failed', hops: [] }),
+    evidence({ carrier: 'cm', family: 6, completed: false, status: 'disabled', hops: [] })
+  ]), 1000).report;
+  assert.deepEqual(result.routes.map(route => route.status), ['detected', 'detected', 'partial', 'unknown', 'failed', 'disabled']);
+  assert.deepEqual(result.routes[1].networks, ['CMI', 'CMNET']);
+  assert.equal(automaticRouteTags(result, undefined, 1001).length, 2);
+  assert.deepEqual(automaticRouteTags(result, undefined, result.expires_at), []);
+});
+
+test('the write boundary rejects malformed, duplicate and contradictory evidence', () => {
+  for (const value of [null, {}, report([]), report([evidence(), evidence()]),
+    report([evidence({ hops: [[-1]] })]), report([evidence({ hops: Array(31).fill([]) })]),
+    report([evidence({ hops: [[4809, 4134, 4837, 9929]] })]),
+    report([evidence({ status: 'failed' })]), report([evidence({ family: '4' })])]) {
+    assert.throws(() => normalizeRouteReport(value));
+  }
+});
+
+const miniflare = new Miniflare({ modules: true,
+  script: 'export default { fetch() { return new Response("OK") } }',
+  d1Databases: { DB: 'route-detection-test', LEGACY: 'route-detection-legacy-test' } });
+const db = await miniflare.getD1Database('DB');
+const legacy = await miniflare.getD1Database('LEGACY');
+const env = { DB: db, API_SECRET: 'LOCAL_ROUTE_TEST_ONLY' };
+await initDatabase(db);
+await db.prepare("INSERT INTO servers (id, name, tags, custom_ct, custom_cu, ping_mode, history_partition_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+  .bind('routes-demo', 'Demo', 'Manual GIA', 'ct.example.invalid:443', '0', 'icmp', 1).run();
+after(async () => { clearAllCaches(); await miniflare.dispose(); });
+
+const request = (payload, authorized = true) => new Request('https://monitor.example.invalid/update/routes', {
+  method: 'POST', headers: authorized ? { Authorization: `Bearer ${env.API_SECRET}` } : {},
+  body: typeof payload === 'string' ? payload : JSON.stringify(payload)
+});
+
+test('agent authentication runs before parsing, and missing server IDs cannot create nodes', async () => {
+  assert.equal((await handleRouteDetection(request('not json', false), env)).status, 401);
+  assert.equal((await handleRouteDetection(request({ ...report(), id: 'does-not-exist' }), env)).status, 404);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM servers').first()).n, 1);
+});
+
+test('configuration inherits site targets, honors disabled nodes and uses the server protocol', async () => {
+  const response = await handleRouteDetection(new Request('https://monitor.example.invalid/update/routes?id=routes-demo', {
+    headers: { Authorization: `Bearer ${env.API_SECRET}` }
+  }), env);
+  assert.equal(response.status, 200);
+  const config = await response.json();
+  assert.equal(config.targets[0].target, 'ct.example.invalid:443');
+  assert.equal(config.targets[1].target, '');
+  assert.ok(config.targets[2].target);
+  assert.equal(config.targets[0].protocol, 'icmp');
+  assert.equal(JSON.stringify(config).includes(env.API_SECRET), false);
+});
+
+test('real D1 writes preserve manual tags, replace failed results and invalidate the list cache', async () => {
+  await getAllServers(db);
+  const response = await handleRouteDetection(request({ ...report(), ip: '203.0.113.8' }), env);
+  assert.equal(response.status, 200);
+  const row = await db.prepare('SELECT tags, route_report FROM servers WHERE id = ?').bind('routes-demo').first();
+  assert.equal(row.tags, 'Manual GIA');
+  assert.equal(JSON.parse(row.route_report).routes[0].status, 'detected');
+  assert.doesNotMatch(row.route_report, /203\.0\.113/);
+  assert.equal(JSON.parse((await getAllServers(db))[0].route_report).routes[0].status, 'detected');
+  await handleRouteDetection(request(report([evidence({ status: 'failed', completed: false, hops: [] })])), env);
+  assert.equal(JSON.parse((await getAllServers(db))[0].route_report).routes[0].status, 'failed');
+});
+
+test('public list and detail return typed reports while hidden nodes retain access control', async () => {
+  const sys = { is_public: 'true', show_three_net_details: 'false' };
+  const detail = await (await handleServerAPI(new Request('https://monitor.example.invalid/api/server?id=routes-demo'), env, sys)).json();
+  assert.equal(detail.route_report.routes[0].status, 'failed');
+  const list = await (await handleServersAPI(new Request('https://monitor.example.invalid/api/servers'), env, sys)).json();
+  assert.equal(list.servers[0].route_report.routes[0].status, 'failed');
+  await db.prepare("INSERT INTO servers (id, name, is_hidden, history_partition_id) VALUES ('hidden-routes', 'Hidden', '1', 2)").run();
+  clearAllCaches();
+  assert.equal((await handleServerAPI(new Request('https://monitor.example.invalid/api/server?id=hidden-routes'), env, sys)).status, 404);
+  const filtered = await (await handleServersAPI(new Request('https://monitor.example.invalid/api/servers'), env, sys)).json();
+  assert.equal(filtered.servers.length, 1);
+});
+
+test('actual body length is bounded even without Content-Length; bad JSON does not mutate storage', async () => {
+  const before = (await db.prepare('SELECT route_report FROM servers WHERE id = ?').bind('routes-demo').first()).route_report;
+  assert.equal((await handleRouteDetection(request(' '.repeat(16385)), env)).status, 413);
+  assert.equal((await handleRouteDetection(request('{'), env)).status, 400);
+  assert.equal((await db.prepare('SELECT route_report FROM servers WHERE id = ?').bind('routes-demo').first()).route_report, before);
+});
+
+test('legacy databases require an additive upgrade that preserves server data', async () => {
+  await legacy.prepare("CREATE TABLE servers (id TEXT PRIMARY KEY, name TEXT, tags TEXT, price TEXT DEFAULT '')").run();
+  await legacy.prepare("INSERT INTO servers (id, name, tags) VALUES ('legacy-routes', 'Legacy', 'Keep')").run();
+  clearAllCaches();
+  const legacyEnv = { ...env, DB: legacy };
+  const missing = await handleRouteDetection(request({ ...report(), id: 'legacy-routes' }), legacyEnv);
+  assert.equal(missing.status, 409);
+  assert.equal((await addServerColumns(legacy)).success, true);
+  clearAllCaches();
+  assert.equal((await handleRouteDetection(request({ ...report(), id: 'legacy-routes' }), legacyEnv)).status, 200);
+  const row = await legacy.prepare("SELECT * FROM servers WHERE id = 'legacy-routes'").first();
+  assert.equal(row.tags, 'Keep');
+  assert.equal(JSON.parse(row.route_report).routes[0].status, 'detected');
+});

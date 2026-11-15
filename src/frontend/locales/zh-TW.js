@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "自動線路偵測",
+  routeDetected: "已識別",
+  routePartial: "路徑未完成",
+  routeUnknown: "未識別",
+  routeFailed: "偵測失敗",
+  routeDisabled: "已關閉",
+  routeExpired: "結果已過期",
+  routeScope: "偵測 VPS 到設定目標的單向 ASN 路徑，不認證 GIA/GT，也不代表相反方向。",
   collectInterval: '採集間隔（秒）',
   theme: '主題',
   themeAuto: '跟隨系統',

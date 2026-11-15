@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "Detección de rutas",
+  routeDetected: "Identificado",
+  routePartial: "Ruta incompleta",
+  routeUnknown: "Sin identificar",
+  routeFailed: "Detección fallida",
+  routeDisabled: "Desactivado",
+  routeExpired: "Resultado caducado",
+  routeScope: "Ruta ASN hacia el destino configurado; no certifica GIA/GT ni el sentido inverso.",
   theme: 'Tema',
   themeAuto: 'Seguir al sistema',
   themeDark: 'Oscuro',
