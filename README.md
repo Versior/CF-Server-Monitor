@@ -19,6 +19,8 @@
 
 自动识别线路的 VPS 检测脚本、Worker 接口及安装步骤见 [自动线路检测](docs/route-detection.md)。结果包含单向 ASN 路径，手动标签优先。
 
+Linux systemd VPS 支持 [一次安装监控探针和线路检测](docs/route-detection.md#一次安装监控探针和线路检测)，已有 root/system Go 探针会复用原配置。
+
 </div>
 
 ## 项目简介

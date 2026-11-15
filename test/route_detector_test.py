@@ -55,6 +55,19 @@ class RouteDetectorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 detector.load_config(path)
 
+    def test_agent_user_agent_is_validated_at_the_config_boundary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.json'
+            config = {'url': 'https://monitor.example.invalid', 'id': 'demo', 'secret': 'FAKE',
+                      'nexttrace': '/bin/sh', 'ua': 'cfsm-custom-test'}
+            path.write_text(json.dumps(config))
+            path.chmod(0o600)
+            self.assertEqual(detector.load_config(path)['ua'], 'cfsm-custom-test')
+            config['ua'] = 'bad\r\nheader'
+            path.write_text(json.dumps(config))
+            with self.assertRaises(ValueError):
+                detector.load_config(path)
+
 
 if __name__ == '__main__':
     unittest.main()
