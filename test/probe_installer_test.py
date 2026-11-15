@@ -22,6 +22,30 @@ detector_spec.loader.exec_module(detector)
 
 
 class ProbeInstallerTests(unittest.TestCase):
+    def test_missing_published_file_reports_http_status_instead_of_network_failure(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'route-networks.json'
+                with self.assertRaisesRegex(RuntimeError, r'route-networks\.json.*HTTP 404') as caught:
+                    installer.download(f'http://127.0.0.1:{server.server_port}/route-networks.json', path)
+                self.assertNotIn('VPS 到 GitHub 的网络', str(caught.exception))
+                self.assertFalse(path.exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_download_verifies_release_bytes_before_execution(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
