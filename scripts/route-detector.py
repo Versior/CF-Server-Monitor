@@ -35,6 +35,9 @@ def load_config(path):
             not isinstance(config['secret'], str) or not config['secret'] or
             '\n' in config['secret'] or '\r' in config['secret']):
         raise ValueError('Config needs a server ID and an agent credential')
+    if (not isinstance(config.get('ua', 'cfsm'), str) or not config.get('ua', 'cfsm') or
+            '\n' in config.get('ua', 'cfsm') or '\r' in config.get('ua', 'cfsm')):
+        raise ValueError('Config needs a valid agent User-Agent')
     families = config.get('families', [4])
     if families not in ([4], [6], [4, 6]) or any(type(family) is not int for family in families):
         raise ValueError('families must be [4], [6], or [4, 6]')
@@ -50,6 +53,7 @@ def api_request(config, payload=None):
     request = Request(config['url'] + '/update/routes' + suffix,
                       data=json.dumps(payload).encode() if payload is not None else None,
                       headers={'Authorization': 'Bearer ' + config['secret'],
+                               'User-Agent': config.get('ua', 'cfsm'),
                                'Content-Type': 'application/json'})
     try:
         with build_opener(MonitorRedirect).open(request, timeout=20) as response:
