@@ -1,9 +1,9 @@
 [Unit]
-Description=Check CF-Server-Monitor routes every six hours
+Description=Check CF-Server-Monitor routes daily
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=6h
+OnUnitActiveSec=24h
 RandomizedDelaySec=5min
 
 [Install]

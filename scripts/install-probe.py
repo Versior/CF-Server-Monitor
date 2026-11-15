@@ -21,7 +21,7 @@ AGENT_BINARY = Path('/usr/local/bin/cf-probe')
 ROUTE_DIR = Path('/opt/cfsm-route-detector')
 ROUTE_CONFIG = Path('/etc/cfsm-route-detector.json')
 SYSTEMD_DIR = Path('/etc/systemd/system')
-SOURCE = 'https://raw.githubusercontent.com/Versior/CF-Server-Monitor/2484639f7c8c141d037a362ed0b7627cfe28ca95/scripts'
+SOURCE = 'https://raw.githubusercontent.com/Versior/CF-Server-Monitor/45a8b4b74fe2a97837916098da8b3e375832fe96/scripts'
 AGENT_VERSION = 'v1.1.3'
 NEXTTRACE_VERSION = 'v1.7.6'
 HASHES = {
@@ -214,7 +214,7 @@ def main():
                      stage / 'cf-probe', HASHES[arch][0])
             (stage / 'cf-probe').chmod(0o755)
         install(config, values, stage, probe_needed)
-    print('安装完成：监控探针运行中，首轮线路结果已上报，以后每 6 小时检测。')
+    print('安装完成：监控探针运行中，首轮线路结果已上报，以后每天检测一次。')
     print('请在节点网络详情查看识别结果；未完成或失败的路径会如实显示。')
 
 
