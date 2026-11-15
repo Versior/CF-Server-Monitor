@@ -77,6 +77,7 @@ export async function initDatabase(db) {
           server_group TEXT DEFAULT 'Default',
           region TEXT DEFAULT '',
           tags TEXT DEFAULT '',
+          route_report TEXT DEFAULT '',
           note TEXT DEFAULT '',
           price TEXT DEFAULT '',
           billing_cycle TEXT DEFAULT 'month',

@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "Route detection",
+  routeDetected: "Detected",
+  routePartial: "Incomplete path",
+  routeUnknown: "Unidentified",
+  routeFailed: "Detection failed",
+  routeDisabled: "Disabled",
+  routeExpired: "Expired result",
+  routeScope: "One-way ASN path to the configured target; does not certify GIA/GT or the opposite direction.",
   theme: 'Theme',
   themeAuto: 'Follow System',
   themeDark: 'Dark',

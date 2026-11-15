@@ -1,0 +1,13 @@
+[Unit]
+Description=CF-Server-Monitor route detection
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/cfsm-route-detector/route-detector.py --config /etc/cfsm-route-detector.json
+TimeoutStartSec=15min
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_RAW
+PrivateTmp=true
+UMask=0077

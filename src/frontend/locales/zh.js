@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "自动线路检测",
+  routeDetected: "已识别",
+  routePartial: "路径未完成",
+  routeUnknown: "未识别",
+  routeFailed: "检测失败",
+  routeDisabled: "已关闭",
+  routeExpired: "结果已过期",
+  routeScope: "检测 VPS 到配置目标的单向 ASN 路径，不认证 GIA/GT，也不代表相反方向。",
   collectInterval: '采集间隔（秒）',
   theme: '主题',
   themeAuto: '跟随系统',

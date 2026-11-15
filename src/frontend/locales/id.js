@@ -1,4 +1,12 @@
 export default {
+  routeDetection: "Deteksi rute",
+  routeDetected: "Terdeteksi",
+  routePartial: "Jalur belum lengkap",
+  routeUnknown: "Tidak teridentifikasi",
+  routeFailed: "Deteksi gagal",
+  routeDisabled: "Dinonaktifkan",
+  routeExpired: "Hasil kedaluwarsa",
+  routeScope: "Jalur ASN satu arah ke target yang diatur; tidak menjamin GIA/GT atau arah sebaliknya.",
   theme: 'Tema',
   themeAuto: 'Ikuti Sistem',
   themeDark: 'Gelap',

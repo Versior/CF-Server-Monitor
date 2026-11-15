@@ -17,6 +17,8 @@
 
 [在线演示](https://demo.huilang.me/) · [API 文档](API.md) · [Go 探针文档](https://github.com/huilang-me/cfsm-agent) · [主题开发](theme-develop.md) · [主题开发 AI 提示词](theme-ai-prompt.md)
 
+自动识别线路的 VPS 检测脚本、Worker 接口及安装步骤见 [自动线路检测](docs/route-detection.md)。结果包含单向 ASN 路径，手动标签优先。
+
 </div>
 
 ## 项目简介
