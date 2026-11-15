@@ -12,6 +12,34 @@ import { automaticRouteTags } from '../src/frontend/utils/routeDetection.js';
 const evidence = (overrides = {}) => ({ carrier: 'ct', family: 4, status: 'ok', completed: true, hops: [[64500], [], [4809], [4134]], ...overrides });
 const report = (routes = [evidence()]) => ({ id: 'routes-demo', routes });
 
+test('expanded networks distinguish CTGNET, CUG and CMIN2 from CMI', () => {
+  const result = normalizeRouteReport(report([evidence({ hops: [[23764], [10099], [58807], [58453]] })])).report;
+  assert.deepEqual(result.routes[0].networks, ['CTGNET', 'CUG', 'CMIN2', 'CMI']);
+});
+
+test('router prefix hints keep their source separate from observed ASNs', () => {
+  const result = normalizeRouteReport(report([evidence({ hops: [[], [4134]],
+    prefix_hints: [{ hop: 0, prefix: '59.43.0.0/16' }], protocol: 'icmp', attempts: 2 })])).report.routes[0];
+  assert.deepEqual(result.networks, ['163', 'CN2']);
+  assert.deepEqual(result.hops, [[], [4134]]);
+  assert.deepEqual(result.prefix_hints, [{ hop: 0, prefix: '59.43.0.0/16', network: 'CN2' }]);
+  assert.equal(result.protocol, 'icmp');
+  assert.equal(result.attempts, 2);
+  for (const prefix_hints of [[{ hop: 0, prefix: '0.0.0.0/0' }], [{ hop: 2, prefix: '59.43.0.0/16' }]]) {
+    assert.throws(() => normalizeRouteReport(report([evidence({ hops: [[]], prefix_hints })])));
+  }
+  assert.throws(() => normalizeRouteReport(report([evidence({ status: 'failed', completed: false, hops: [],
+    prefix_hints: [{ hop: 0, prefix: '59.43.0.0/16' }] })])));
+});
+
+test('international transit is informative without certifying a China backbone', () => {
+  const result = normalizeRouteReport(report([evidence({ hops: [[6453], [136958]] })]), 1000).report;
+  assert.equal(result.routes[0].status, 'unknown');
+  assert.deepEqual(result.routes[0].networks, []);
+  assert.deepEqual(result.routes[0].transit_networks, ['TATA']);
+  assert.deepEqual(automaticRouteTags(result, { ct: 'CT' }, 1001), ['CT via TATA']);
+});
+
 test('ASN evidence identifies mixed backbone networks without asserting GIA or GT', () => {
   const result = normalizeRouteReport({ ...report(), secret: 'FAKE_TEST_VALUE', ip: '203.0.113.8' }, 1000);
   assert.deepEqual(result.report.routes[0].networks, ['CN2', '163']);
@@ -39,8 +67,8 @@ test('IPv6, CMI, 9929 and incomplete/unknown/failed evidence keep distinct state
     evidence({ carrier: 'cm', family: 6, completed: false, status: 'disabled', hops: [] })
   ]), 1000).report;
   assert.deepEqual(result.routes.map(route => route.status), ['detected', 'detected', 'partial', 'unknown', 'failed', 'disabled']);
-  assert.deepEqual(result.routes[1].networks, ['CMI', 'CMNET']);
-  assert.equal(automaticRouteTags(result, undefined, 1001).length, 2);
+  assert.deepEqual(result.routes[1].networks, ['CMI', 'CMIN2', 'CMNET']);
+  assert.deepEqual(automaticRouteTags(result, undefined, 1001), ['CU 9929 / 4837', 'CM CMI / CMIN2 / CMNET', 'CT CN2 / 163 (partial)']);
   assert.deepEqual(automaticRouteTags(result, undefined, result.expires_at), []);
 });
 

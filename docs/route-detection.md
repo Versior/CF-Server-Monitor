@@ -2,7 +2,7 @@
 
 线路检测由 **VPS 上的独立 Python 脚本、NextTrace 和 Worker** 配合完成，无需更换现有 cfsm-agent。未安装检测脚本的服务器继续使用手动标签。
 
-脚本从后台读取本台服务器的电信、联通、移动测试目标，继承项目的全局目标及节点覆盖配置；设置为 `0` 的目标不检测。使用有限次数的 TCP 或 ICMP traceroute，上报每跳的 ASN，由 Worker 识别 CN2、163、4837、9929、CMI、CMNET。IPv4 默认开启，IPv6 可选。
+脚本从后台读取本台服务器的电信、联通、移动测试目标，继承项目的全局目标及节点覆盖配置；设置为 `0` 的目标不检测。使用有限次数的 TCP 或 ICMP traceroute，识别 CN2、163、CTGNET、4837、9929、CUG、CMI、CMIN2、CMNET，并记录 NTT、Cogent、Lumen、HE、Arelion、GTT、TATA、PCCW、Zayo 等国际网络。IPv4 默认开启，IPv6 可选。
 
 ## 检测结果的含义
 
@@ -10,10 +10,22 @@
 - 完整路径经过已知 ASN 时显示对应网络；混合网络会全部保留，例如 `CN2 / 163`。
 - 未到达目标时标记“路径未完成”，缺少已知 ASN 时显示“未识别”，执行失败显示“检测失败”。失败结果会替换旧记录。
 - 新上报结果有效期为 48 小时，过期后不再用于自动线路标签，为每天一次的检测保留调度延迟和短暂上报失败的余量。检测失败仍会替换旧记录并显示失败。
-- 手动标签优先。原生首页在没有手动标签时使用已完成检测的线路；详情显示检测时间、各方向状态和 ASN 证据。第三方主题可读取同样的数据。
+- 手动标签优先。没有手动标签时展示已完成检测的线路；已观测到网络但没有到达目标的路径会带有 `partial`／“路径未完成”标识。仅观测到国际网络时显示 `via`／“经”，中国骨干仍为未识别。详情显示检测时间、各方向状态、ASN 和 IP 段匹配来源。第三方主题可读取同样的数据。
 - IPv4 和 IPv6 分开记录。每个运营商最多检测两个地址族，不推断未检测的方向。
 
 ASN 对照来自 [RIPEstat](https://stat.ripe.net/)，路径结构与 CLI 参数按 [NextTrace v1.7.6](https://github.com/nxtrace/NTrace-core/releases/tag/v1.7.6) 校验。
+
+## 覆盖率优化与参考
+
+本版参考了 [zhanghanyun/backtrace](https://github.com/zhanghanyun/backtrace/blob/55956a8447c0ce3c49c403d61d9837f71d3c2e00/asn.go) 的骨干接口段判断，以及 [oneclickvirt/backtrace](https://github.com/oneclickvirt/backtrace/blob/c1fb494a874716b439dea2d4d50a7c67ac03f30b/bk/route_classification.go) 对 CTGNET、CUG、CMIN2 和路径证据的处理。同类工具也使用多个城市和备用目标；本项目继续使用后台指定目标，以免把不同目标的结果混成一条线路。
+
+- `scripts/route-networks.json` 是 Python 与 Worker 共用的规则表，包含 9 类中国网络、9 个常见国际网络和 13 个常见 IPv4 骨干接口段。AS58807 对应 CMIN2，AS58453 对应 CMI。
+- 对已回应且没有已知骨干 ASN 的跳，在 VPS 内存中按实际 IP 做最长前缀匹配。明确的骨干 ASN 优先，宽泛 CMI 段不会覆盖明确的 CMIN2 ASN。接口段匹配是辅助证据，与 ASN 记录分开，不凭服务器名称或目标运营商推断。
+- 先使用后台指定的探测协议。未得到骨干证据、路径未完成，或至少一半跳缺少 ASN／接口段证据时，切换 TCP／ICMP 再测一次。每跳最多 3 次探测；每方向最多 2 个进程，每个进程最多 60 秒。
+- 选取一条证据更充分的测量记录，不把两次探测的跳拼成一条虚构路径。第二次失败不会抹掉第一次的有效证据。两次都失败时仍记录失败。
+- IP 段匹配在本地执行，不为这些规则额外调用 GeoIP 服务。Worker 每轮仍只接收一次汇总上报；每天一次的定时器保持不变。
+
+没有回应 IP 的跳仍无法识别。接口段规则主要帮助“有 IP、缺少 ASN”的情况；IPv6 继续读取 NextTrace 的 ASN。识别率需要在实际 VPS 上验证，不保证每个目标都有完整路径。
 
 ## Worker 更新
 
@@ -60,11 +72,12 @@ curl -fsSL https://raw.githubusercontent.com/Versior/CF-Server-Monitor/main/scri
 
 已有其他形式的监控探针、只需要独立线路检测时，要求 Linux、Python **3.9+**、[NextTrace **v1.7.6+**](https://github.com/nxtrace/NTrace-core)。先按 NextTrace 官方文档安装对应架构的版本。NextTrace 需要发送原始探测包的权限。
 
-从本仓库下载 `scripts/route-detector.py`、`scripts/route-detector.service`、`scripts/route-detector.timer` 后，安装到 VPS：
+从本仓库下载 `scripts/route-detector.py`、`scripts/route-networks.json`、`scripts/route-detector.service`、`scripts/route-detector.timer` 后，安装到 VPS：
 
 ```sh
 sudo install -d -m 755 /opt/cfsm-route-detector
 sudo install -m 755 scripts/route-detector.py /opt/cfsm-route-detector/route-detector.py
+sudo install -m 644 scripts/route-networks.json /opt/cfsm-route-detector/route-networks.json
 sudo install -m 644 scripts/route-detector.service /etc/systemd/system/cfsm-route-detector.service
 sudo install -m 644 scripts/route-detector.timer /etc/systemd/system/cfsm-route-detector.timer
 sudo install -m 600 /dev/null /etc/cfsm-route-detector.json
@@ -101,7 +114,7 @@ systemctl list-timers cfsm-route-detector.timer
 sudo journalctl -u cfsm-route-detector.service --no-pager -n 20
 ```
 
-定时器在开机后执行首轮检测，之后每 24 小时运行一次，附加最多 5 分钟随机延迟以分散节点上报。单次最多六条方向，每条限 30 跳、每跳两次探测，单条进程超时 120 秒，整个服务超时 15 分钟。每次运行都读取当前后台目标；修改三网目标后可手动启动 `cfsm-route-detector.service`，无需修改脚本。systemd 不会同时运行同一个 oneshot 服务。日常监控探针的采集、延迟测试及指标上报频率不受此定时器影响。
+定时器在开机后执行首轮检测，之后每 24 小时运行一次，附加最多 5 分钟随机延迟以分散节点上报。单次最多六条方向，每条限 30 跳、每跳三次探测；必要时切换协议重测一次，两次进程合计最多 120 秒，整个服务超时 15 分钟。每次运行都读取当前后台目标；修改三网目标后可手动启动 `cfsm-route-detector.service`，无需修改脚本。systemd 不会同时运行同一个 oneshot 服务。日常监控探针的采集、延迟测试及指标上报频率不受此定时器影响。
 
 已有单独安装的 VPS，重新下载并安装最新 `scripts/route-detector.timer` 后，执行以下命令使新周期生效，并立即上报首轮结果：
 
@@ -137,9 +150,9 @@ POST 示例（无凭据、IP 地址或主机名）：
 
 `carrier` 为 `ct/cu/cm`，`family` 为 `4/6`。客户端状态为 `ok/failed/disabled`；失败和禁用时 `hops` 必须为空、`completed` 必须为 `false`。Worker 重新计算识别结果，不接受客户端直接指定“GIA”或网络名称。
 
-公开 `/api/servers` 和 `/api/server` 新增 `route_report` 对象：`checked_at`、`expires_at`（毫秒时间戳）和 `routes`。每条方向包含 `carrier`、`family`、`status`（`detected/partial/unknown/failed/disabled`）、`completed`、`networks`、`hops`。未检测为 `null`。沿用现有私有站点及隐藏服务器的访问规则。
+公开 `/api/servers` 和 `/api/server` 新增 `route_report` 对象：`checked_at`、`expires_at`（毫秒时间戳）和 `routes`。每条方向包含 `carrier`、`family`、`status`（`detected/partial/unknown/failed/disabled`）、`completed`、`networks`、`hops`。新报告还包含 `prefix_hints`（`hop`、已知接口段 `prefix`、Worker 推导的 `network`）、`transit_networks`，以及 `protocol`、`attempts`。旧报告没有新字段时继续可读；这些字段保存在原 `route_report` JSON 中，无需再次升级数据库。未检测为 `null`。沿用现有私有站点及隐藏服务器的访问规则。
 
-Worker 只保存 ASN，不保存本次检测的真实 IP、路由器主机名、完整 NextTrace 输出或凭据。**NextTrace 本身可能向所选 GeoIP 服务查询各跳的地址**，按 NextTrace 官方数据服务说明配置。检测命令 stdout/stderr 被脚本捕获，不写入项目日志。
+Worker 保存 ASN 与规则表中的粗粒度接口段提示，不保存本次检测的完整跳 IP、路由器主机名、完整 NextTrace 输出或凭据。**NextTrace 本身可能向所选 GeoIP 服务查询各跳的地址**，按 NextTrace 官方数据服务说明配置。检测命令 stdout/stderr 被脚本捕获，不写入项目日志。
 
 ## 验证
 
