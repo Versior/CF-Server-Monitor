@@ -9,7 +9,7 @@
 - 结果表示 **VPS 到当前配置目标的单向路径**。不表示另一方向，也不认证 GIA/GT、带宽、延迟或商家的线路等级。
 - 完整路径经过已知 ASN 时显示对应网络；混合网络会全部保留，例如 `CN2 / 163`。
 - 未到达目标时标记“路径未完成”，缺少已知 ASN 时显示“未识别”，执行失败显示“检测失败”。失败结果会替换旧记录。
-- 结果有效期为 24 小时，过期后不再用于自动线路标签。
+- 新上报结果有效期为 48 小时，过期后不再用于自动线路标签，为每天一次的检测保留调度延迟和短暂上报失败的余量。检测失败仍会替换旧记录并显示失败。
 - 手动标签优先。原生首页在没有手动标签时使用已完成检测的线路；详情显示检测时间、各方向状态和 ASN 证据。第三方主题可读取同样的数据。
 - IPv4 和 IPv6 分开记录。每个运营商最多检测两个地址族，不推断未检测的方向。
 
@@ -35,11 +35,13 @@ curl -fsSL https://raw.githubusercontent.com/Versior/CF-Server-Monitor/main/scri
 
 已有 root/system Go 探针时，统一入口直接复用 `/etc/config/cf-probe/config.conf` 中的地址、ID 和凭据，保留原探针版本、配置与流量记录。只有探针尚未安装时才调用官方 Go 二进制的 `install`，无需分别执行两套安装命令。
 
-统一入口会检查或安装 Python、curl 和 CA 证书，验证 Worker 检测接口后安装两项服务、执行首轮线路检测，并启用每六小时的定时器。旧 Worker 返回网页、数据库尚未升级或上报凭据错误时会停止安装。线路结果是否完整、是否识别到已知 ASN，以节点网络详情为准。
+统一入口会检查或安装 Python、curl 和 CA 证书，验证 Worker 检测接口后安装两项服务、执行首轮线路检测，并启用每天一次的定时器。旧 Worker 返回网页、数据库尚未升级或上报凭据错误时会停止安装。线路结果是否完整、是否识别到已知 ASN，以节点网络详情为准。
 
 全新监控探针使用 **cfsm-agent v1.1.3**，线路检测使用 **NextTrace v1.7.6**；按官方 Release 的 SHA256 校验二进制后才执行。NextTrace 安装在 `/opt/cfsm-route-detector/nexttrace`，不覆盖系统已有的 NextTrace。检测到非 root、Docker、旧 Shell 或多实例探针时，统一入口会停止，避免重复上报；非 systemd 系统不使用此入口。
 
 重复运行无需先卸载：同一个 root/system 监控探针继续使用 `cf-probe.service`；线路检测会停止旧任务、覆盖原检测文件，再启用同一个 `cfsm-route-detector.timer`。监控和线路检测是两项不同服务，不会创建第二份同名监控探针。
+
+已有统一安装的 VPS，重新运行上面的命令即可升级为每天检测，并立即上报新的结果。只部署 Worker 不会修改 VPS 上已安装的定时器。新 Worker 为之后收到的结果设置 48 小时有效期，旧结果保留原来的到期时间；本次周期调整无需再次升级数据库。
 
 双栈检测在同一命令末尾加 `--ipv6`。无人值守首次安装可以使用 `--config /path/to/private.json`，文件权限须为 `600`：
 
@@ -90,7 +92,7 @@ sudoedit /etc/cfsm-route-detector.json
 sudo /usr/bin/python3 /opt/cfsm-route-detector/route-detector.py --config /etc/cfsm-route-detector.json
 ```
 
-再启用每六小时的自动检测：
+再启用每天一次的自动检测：
 
 ```sh
 sudo systemctl daemon-reload
@@ -99,7 +101,16 @@ systemctl list-timers cfsm-route-detector.timer
 sudo journalctl -u cfsm-route-detector.service --no-pager -n 20
 ```
 
-单次最多六条方向，每条限 30 跳、每跳两次探测，单条进程超时 120 秒，整个服务超时 15 分钟。每次运行都读取当前后台目标；修改三网目标后可手动启动 `cfsm-route-detector.service`，无需修改脚本。systemd 不会同时运行同一个 oneshot 服务。
+定时器在开机后执行首轮检测，之后每 24 小时运行一次，附加最多 5 分钟随机延迟以分散节点上报。单次最多六条方向，每条限 30 跳、每跳两次探测，单条进程超时 120 秒，整个服务超时 15 分钟。每次运行都读取当前后台目标；修改三网目标后可手动启动 `cfsm-route-detector.service`，无需修改脚本。systemd 不会同时运行同一个 oneshot 服务。日常监控探针的采集、延迟测试及指标上报频率不受此定时器影响。
+
+已有单独安装的 VPS，重新下载并安装最新 `scripts/route-detector.timer` 后，执行以下命令使新周期生效，并立即上报首轮结果：
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl restart cfsm-route-detector.timer
+sudo systemctl start cfsm-route-detector.service
+systemctl list-timers cfsm-route-detector.timer
+```
 
 停用：
 
@@ -107,7 +118,7 @@ sudo journalctl -u cfsm-route-detector.service --no-pager -n 20
 sudo systemctl disable --now cfsm-route-detector.timer
 ```
 
-停止后，最后一次记录会在 24 小时后失效，手动标签继续显示。
+停止后，最后一次记录在自身的到期时间失效（新上报结果为检测后 48 小时），手动标签继续显示。
 
 ## 数据与认证
 

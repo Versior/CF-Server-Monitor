@@ -3,7 +3,7 @@ const NETWORKS = new Map([
   [58453, 'CMI'], [58807, 'CMI'], [9808, 'CMNET']
 ]);
 export const ROUTE_REPORT_MAX_BYTES = 16384;
-export const ROUTE_REPORT_TTL_MS = 24 * 3600000;
+export const ROUTE_REPORT_TTL_MS = 48 * 3600000;
 
 // Report only ASN evidence. Addresses, router names and credentials never enter storage.
 export function normalizeRouteReport(raw, now = Date.now()) {

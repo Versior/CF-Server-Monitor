@@ -21,6 +21,14 @@ test('ASN evidence identifies mixed backbone networks without asserting GIA or G
   assert.deepEqual(result.report.routes[0].hops[1], []);
 });
 
+test('daily route reports tolerate scheduling delays and expire after 48 hours', () => {
+  const result = normalizeRouteReport(report(), 1000).report;
+  assert.equal(result.expires_at, 1000 + 48 * 3600000);
+  assert.deepEqual(automaticRouteTags(result, undefined, 1000 + 24 * 3600000 + 5 * 60000), ['CT CN2 / 163']);
+  assert.deepEqual(automaticRouteTags(result, undefined, result.expires_at - 1), ['CT CN2 / 163']);
+  assert.deepEqual(automaticRouteTags(result, undefined, result.expires_at), []);
+});
+
 test('IPv6, CMI, 9929 and incomplete/unknown/failed evidence keep distinct states', () => {
   const result = normalizeRouteReport(report([
     evidence({ carrier: 'cu', family: 6, hops: [[9929], [4837]] }),
@@ -87,6 +95,7 @@ test('real D1 writes preserve manual tags, replace failed results and invalidate
   const row = await db.prepare('SELECT tags, route_report FROM servers WHERE id = ?').bind('routes-demo').first();
   assert.equal(row.tags, 'Manual GIA');
   assert.equal(JSON.parse(row.route_report).routes[0].status, 'detected');
+  assert.equal(JSON.parse(row.route_report).expires_at - JSON.parse(row.route_report).checked_at, 48 * 3600000);
   assert.doesNotMatch(row.route_report, /203\.0\.113/);
   assert.equal(JSON.parse((await getAllServers(db))[0].route_report).routes[0].status, 'detected');
   await handleRouteDetection(request(report([evidence({ status: 'failed', completed: false, hops: [] })])), env);

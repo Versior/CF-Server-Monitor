@@ -214,7 +214,7 @@ def main():
                      stage / 'cf-probe', HASHES[arch][0])
             (stage / 'cf-probe').chmod(0o755)
         install(config, values, stage, probe_needed)
-    print('安装完成：监控探针运行中，首轮线路结果已上报，以后每 6 小时检测。')
+    print('安装完成：监控探针运行中，首轮线路结果已上报，以后每天检测一次。')
     print('请在节点网络详情查看识别结果；未完成或失败的路径会如实显示。')
 
 
