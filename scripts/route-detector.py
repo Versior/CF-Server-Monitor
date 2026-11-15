@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run NextTrace on the VPS and send ASN-only evidence to CF-Server-Monitor."""
+"""Run NextTrace and send ASN evidence and interface-prefix hints without exact hop IPs."""
 import argparse
 import ipaddress
 import json
@@ -12,6 +12,10 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+REGISTRY = json.loads(Path(__file__).with_name('route-networks.json').read_text())
+ASN_NETWORKS = {int(asn): name for asn, name in REGISTRY['asn_networks'].items()}
+PREFIX_RULES = sorted(map(ipaddress.ip_network, REGISTRY['prefix_networks']), key=lambda prefix: prefix.prefixlen, reverse=True)
 
 
 class MonitorRedirect(HTTPRedirectHandler):
@@ -82,7 +86,7 @@ def trace_command(executable, target, family, protocol):
     if not 1 <= port <= 65535 or protocol not in ('tcp', 'icmp'):
         raise ValueError('Invalid target protocol or port')
     return [executable, '--traceroute', '--json', '--no-rdns', '--no-color',
-            '--queries', '2', '--max-hops', '30', '--timeout', '1500', f'-{family}',
+            '--queries', '3', '--max-hops', '30', '--timeout', '1500', f'-{family}',
             *(['--tcp', '--port', str(port)] if protocol == 'tcp' else []), host]
 
 
@@ -91,6 +95,7 @@ def parse_trace(text):
     if not isinstance(result, dict) or not isinstance(result.get('Hops'), list) or len(result['Hops']) > 30:
         raise ValueError('Unsupported NextTrace JSON output')
     hops = []
+    prefix_hints = {}
     for samples in result['Hops']:
         if samples is None:
             hops.append([])
@@ -99,7 +104,8 @@ def parse_trace(text):
             raise ValueError('Invalid NextTrace hop samples')
         asns = []
         for sample in samples:
-            if not isinstance(sample, dict) or sample.get('Geo') is not None and not isinstance(sample['Geo'], dict):
+            if (not isinstance(sample, dict) or sample.get('Geo') is not None and not isinstance(sample['Geo'], dict) or
+                    sample.get('Address') is not None and not isinstance(sample['Address'], dict)):
                 raise ValueError('Invalid NextTrace sample')
             if not sample.get('Success'):
                 continue
@@ -108,11 +114,33 @@ def parse_trace(text):
                 value = int(asn.removeprefix('AS'))
                 if 1 <= value <= 4294967295 and value not in asns:
                     asns.append(value)
+                if value in ASN_NETWORKS:
+                    continue
+            raw_ip = (sample.get('Address') or {}).get('IP')
+            if not raw_ip:
+                continue
+            try:
+                address = ipaddress.ip_address(raw_ip)
+            except ValueError:
+                continue
+            for prefix in PREFIX_RULES:
+                if address.version == prefix.version and address in prefix:
+                    prefix_hints.setdefault(str(prefix), {'hop': len(hops), 'prefix': str(prefix)})
+                    break
         hops.append(asns)
     stop = result.get('StopReason') or {}
     if not isinstance(stop, dict):
         raise ValueError('Invalid NextTrace stop reason')
-    return {'hops': hops, 'completed': stop.get('reason') == 'destination_reached'}
+    return {'hops': hops, 'completed': stop.get('reason') == 'destination_reached',
+            'prefix_hints': list(prefix_hints.values())}
+
+
+def trace_score(trace):
+    networks = {ASN_NETWORKS[asn] for hop in trace['hops'] for asn in hop if asn in ASN_NETWORKS}
+    networks.update(REGISTRY['prefix_networks'][hint['prefix']] for hint in trace['prefix_hints'])
+    known_hops = {index for index, hop in enumerate(trace['hops']) if hop}
+    known_hops.update(hint['hop'] for hint in trace['prefix_hints'])
+    return bool(networks), trace['completed'], len(networks), len(known_hops)
 
 
 def collect(config, targets):
@@ -124,18 +152,31 @@ def collect(config, targets):
     for target in targets:
         for family in config['families']:
             route = {'carrier': target['carrier'], 'family': family,
-                     'status': 'disabled', 'hops': [], 'completed': False}
-            if target['target']:
-                command = trace_command(config['nexttrace'], target['target'], family, target['protocol'])
+                     'status': 'disabled', 'hops': [], 'completed': False, 'prefix_hints': [],
+                     'protocol': target['protocol'], 'attempts': 0}
+            routes.append(route)
+            if not target['target']:
+                continue
+            route['status'] = 'failed'
+            best_score = None
+            protocols = (target['protocol'], 'icmp' if target['protocol'] == 'tcp' else 'tcp')
+            for attempt, protocol in enumerate(protocols, 1):
+                route['attempts'] = attempt
+                command = trace_command(config['nexttrace'], target['target'], family, protocol)
                 try:
-                    process = subprocess.run(command, capture_output=True, text=True, timeout=120,
+                    process = subprocess.run(command, capture_output=True, text=True, timeout=60,
                                              env={key: value for key, value in os.environ.items() if key != 'NEXTTRACE_UNINTERRUPTED'})
                     if process.returncode:
                         raise ValueError('Trace failed')
-                    route.update(parse_trace(process.stdout), status='ok')
+                    trace = parse_trace(process.stdout)
                 except (subprocess.TimeoutExpired, OSError, ValueError):
-                    route['status'] = 'failed'
-            routes.append(route)
+                    continue
+                score = trace_score(trace)
+                if best_score is None or score > best_score:
+                    route.update(trace, status='ok', protocol=protocol)
+                    best_score = score
+                if score[0] and score[1] and score[3] * 2 >= len(trace['hops']):
+                    break
     return {'id': config['id'], 'routes': routes}
 
 
@@ -155,7 +196,7 @@ def main():
         print('Route detection failed. Check config permissions, NextTrace, monitor access and database upgrade.', file=sys.stderr)
         return 1
     failed = sum(route['status'] == 'failed' for route in report['routes'])
-    print(f'Route report saved: {len(report["routes"])} directions, {failed} failed. Only ASN evidence was sent to the monitor.')
+    print(f'Route report saved: {len(report["routes"])} directions, {failed} failed. ASN evidence and prefix hints were sent without exact hop IPs.')
     return 0
 
 

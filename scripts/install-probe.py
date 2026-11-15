@@ -134,6 +134,8 @@ def install(config, values, stage, probe_needed):
     for name in ('route-detector.py', 'nexttrace'):
         shutil.copyfile(stage / name, ROUTE_DIR / name)
         (ROUTE_DIR / name).chmod(0o755)
+    shutil.copyfile(stage / 'route-networks.json', ROUTE_DIR / 'route-networks.json')
+    (ROUTE_DIR / 'route-networks.json').chmod(0o644)
     for name, target in (('route-detector.service', 'cfsm-route-detector.service'),
                          ('route-detector.timer', 'cfsm-route-detector.timer')):
         content = (stage / name).read_text()
@@ -191,7 +193,7 @@ def main():
     # /opt staging avoids the common /tmp noexec mount for downloaded binaries.
     with tempfile.TemporaryDirectory(prefix='cfsm-install-', dir='/opt') as folder:
         stage = Path(folder)
-        for name in ('route-detector.py', 'route-detector.service', 'route-detector.timer'):
+        for name in ('route-detector.py', 'route-detector.service', 'route-detector.timer', 'route-networks.json'):
             download(f'{SOURCE}/{name}', stage / name)
         download(f'https://github.com/nxtrace/NTrace-core/releases/download/{NEXTTRACE_VERSION}/nexttrace_linux_{arch}',
                  stage / 'nexttrace', HASHES[arch][1])

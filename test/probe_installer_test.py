@@ -130,7 +130,7 @@ class ProbeInstallerTests(unittest.TestCase):
                 root = Path(folder)
                 stage = root / 'stage'
                 stage.mkdir()
-                for name in ('route-detector.py', 'route-detector.service', 'route-detector.timer'):
+                for name in ('route-detector.py', 'route-detector.service', 'route-detector.timer', 'route-networks.json'):
                     (stage / name).write_bytes((ROOT / 'scripts' / name).read_bytes())
                 (stage / 'nexttrace').write_text('fixture binary')
                 command_log = root / 'commands'
@@ -165,6 +165,7 @@ class ProbeInstallerTests(unittest.TestCase):
                 self.assertEqual((root / 'routes.json').stat().st_mode & 0o777, 0o600)
                 self.assertEqual(json.loads((root / 'routes.json').read_text())['families'], [4, 6])
                 self.assertEqual((root / 'routes/nexttrace').stat().st_mode & 0o777, 0o755)
+                self.assertEqual((root / 'routes/route-networks.json').read_bytes(), (ROOT / 'scripts/route-networks.json').read_bytes())
                 self.assertIn(sys.executable, (systemd / 'cfsm-route-detector.service').read_text())
                 self.assertIn('OnUnitActiveSec=24h\n', (systemd / 'cfsm-route-detector.timer').read_text())
                 self.assertEqual(sorted(path.name for path in systemd.iterdir()), ['cfsm-route-detector.service', 'cfsm-route-detector.timer'])

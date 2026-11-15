@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 
 spec = importlib.util.spec_from_file_location('detector', Path(__file__).parents[1] / 'scripts/route-detector.py')
 detector = importlib.util.module_from_spec(spec)
@@ -10,6 +11,75 @@ spec.loader.exec_module(detector)
 
 
 class RouteDetectorTests(unittest.TestCase):
+    def collect_fixture(self, primary, alternate):
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / 'nexttrace'
+            log = Path(folder) / 'commands.jsonl'
+            executable.write_text(f'#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n'
+                                  f'with Path({str(log)!r}).open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+                                  f'payload = {primary!r} if "--tcp" in sys.argv else {alternate!r}\n'
+                                  'if payload is None: sys.exit(1)\nprint(json.dumps(payload))\n')
+            executable.chmod(0o755)
+            result = detector.collect({'id': 'demo', 'families': [4], 'nexttrace': str(executable)},
+                                      [{'carrier': carrier, 'target': 'ct.example.invalid:443' if carrier == 'ct' else '',
+                                        'protocol': 'tcp'} for carrier in ('ct', 'cu', 'cm')])
+            return result, [json.loads(line) for line in log.read_text().splitlines()]
+
+    def test_router_prefix_recovers_missing_geo_without_fabricating_an_asn(self):
+        result = detector.parse_trace(json.dumps({'Hops': [
+            [{'Success': True, 'Address': {'IP': '59.43.1.1'}, 'Geo': None}],
+            [{'Success': True, 'Address': {'IP': '59.43.2.1'}, 'Geo': {'asnumber': '4134'}}],
+            [{'Success': False, 'Address': {'IP': '202.97.1.1'}}],
+            [{'Success': True, 'Address': {'IP': '203.0.113.8'}}]
+        ], 'StopReason': {'reason': 'destination_reached'}}))
+        self.assertEqual(result['hops'], [[], [4134], [], []])
+        self.assertEqual(result['prefix_hints'], [{'hop': 0, 'prefix': '59.43.0.0/16'}])
+        self.assertNotIn('59.43.1.1', json.dumps(result))
+
+    def test_prefix_matching_uses_network_boundaries_and_specific_cmin2_ranges(self):
+        result = detector.parse_trace(json.dumps({'Hops': [
+            [{'Success': True, 'Address': {'IP': '59.430.1.1'}}],
+            [{'Success': True, 'Address': {'IP': '223.120.128.1'}}],
+            [{'Success': True, 'Address': {'IP': '223.120.1.1'}}],
+            [{'Success': True, 'Address': {'IP': '2001:db8::1'}}]
+        ]}))
+        self.assertEqual(result['prefix_hints'], [{'hop': 1, 'prefix': '223.120.128.0/17'},
+                                                 {'hop': 2, 'prefix': '223.120.0.0/16'}])
+
+    def test_explicit_cmin2_asn_is_not_overridden_by_a_broad_cmi_prefix(self):
+        result = detector.parse_trace(json.dumps({'Hops': [[{'Success': True,
+            'Address': {'IP': '.'.join(map(str, (223, 119, 8, 1)))}, 'Geo': {'asnumber': '58807'}}]]}))
+        self.assertEqual(result['hops'], [[58807]])
+        self.assertEqual(result['prefix_hints'], [])
+
+    def test_sparse_tcp_trace_retries_icmp_and_keeps_one_real_path(self):
+        primary = {'Hops': [[{'Success': True, 'Geo': {'asnumber': '6453'}}]],
+                   'StopReason': {'reason': 'destination_reached'}}
+        alternate = {'Hops': [[{'Success': True, 'Address': {'IP': '59.43.1.1'}, 'Geo': None}]],
+                     'StopReason': {'reason': 'destination_reached'}}
+        result, commands = self.collect_fixture(primary, alternate)
+        route = result['routes'][0]
+        self.assertEqual(len(commands), 2)
+        self.assertIn('--tcp', commands[0])
+        self.assertNotIn('--tcp', commands[1])
+        self.assertEqual(route['protocol'], 'icmp')
+        self.assertEqual(route['attempts'], 2)
+        self.assertEqual(route['hops'], [[]])
+        self.assertEqual(route['prefix_hints'], [{'hop': 0, 'prefix': '59.43.0.0/16'}])
+
+    def test_good_primary_path_stops_without_retry_and_failure_does_not_erase_evidence(self):
+        good = {'Hops': [[{'Success': True, 'Geo': {'asnumber': '4809'}}]],
+                'StopReason': {'reason': 'destination_reached'}}
+        result, commands = self.collect_fixture(good, None)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(result['routes'][0]['attempts'], 1)
+        sparse = {'Hops': [[{'Success': True, 'Geo': {'asnumber': '4134'}}], None, None],
+                  'StopReason': {'reason': 'destination_reached'}}
+        result, commands = self.collect_fixture(sparse, None)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(result['routes'][0]['status'], 'ok')
+        self.assertEqual(result['routes'][0]['hops'], [[4134], [], []])
+
     def test_monitor_redirects_cannot_forward_agent_credentials(self):
         with self.assertRaises(RuntimeError):
             detector.MonitorRedirect().redirect_request(None, None, 302, '', {}, 'https://other.example.invalid')
@@ -23,12 +93,12 @@ class RouteDetectorTests(unittest.TestCase):
             [{'Success': True, 'Geo': {'asnumber': 'AS4837'}}]
         ], 'StopReason': {'reason': 'destination_reached'}}
         result = detector.parse_trace(json.dumps(source))
-        self.assertEqual(result, {'hops': [[4809], [], [], [4837]], 'completed': True})
+        self.assertEqual(result, {'hops': [[4809], [], [], [4837]], 'completed': True, 'prefix_hints': []})
         self.assertNotIn('203.0.113', json.dumps(result))
 
     def test_incomplete_trace_and_missing_geo_do_not_become_successful_detection(self):
         result = detector.parse_trace(json.dumps({'Hops': [[{'Success': True, 'Geo': None}]], 'StopReason': {'reason': 'max_hops'}}))
-        self.assertEqual(result, {'hops': [[]], 'completed': False})
+        self.assertEqual(result, {'hops': [[]], 'completed': False, 'prefix_hints': []})
         for value in [[], {}, {'Hops': [[None]]}, {'Hops': [], 'StopReason': 'bad'}]:
             with self.assertRaises(ValueError):
                 detector.parse_trace(json.dumps(value))
