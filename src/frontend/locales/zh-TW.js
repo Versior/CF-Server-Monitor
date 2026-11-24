@@ -1,7 +1,5 @@
 export default {
   routeDetection: "自動線路偵測",
-  routeDetected: "已識別",
-  routePartial: "路徑未完成",
   routeUnknown: "未識別",
   routeFailed: "偵測失敗",
   routeDisabled: "已關閉",

@@ -9,7 +9,7 @@ const runtime = { timer: null }
 onMounted(() => { runtime.timer = setInterval(() => { now.value = Date.now() }, 60000) })
 onUnmounted(() => clearInterval(runtime.timer))
 const expired = computed(() => props.report && props.report.expires_at <= now.value)
-const statusKey = { detected: 'routeDetected', partial: 'routePartial', unknown: 'routeUnknown', failed: 'routeFailed', disabled: 'routeDisabled' }
+const statusKey = { unknown: 'routeUnknown', failed: 'routeFailed', disabled: 'routeDisabled' }
 </script>
 
 <template>
@@ -18,7 +18,10 @@ const statusKey = { detected: 'routeDetected', partial: 'routePartial', unknown:
     <p>{{ trans.routeScope }}</p>
     <div v-for="route in report.routes" :key="`${route.carrier}-${route.family}`" class="route-direction">
       <span>{{ trans[{ ct: 'pingCt', cu: 'pingCu', cm: 'pingCm' }[route.carrier]] }} · IPv{{ route.family }}<small v-if="route.protocol" class="route-method">{{ trans.routeMethod }}: {{ route.protocol.toUpperCase() }} · {{ trans.routeAttempts }}: {{ route.attempts }}<template v-if="route.target_source === 'backup'"> · {{ trans.routeBackup }}</template></small></span>
-      <strong :class="{ detected: !expired && route.status === 'detected' }">{{ expired ? trans.routeExpired : trans[statusKey[route.status]] }}<template v-if="route.networks.length"> · {{ route.networks.join(' / ') }}</template></strong>
+      <strong :class="{ detected: !expired && route.networks.length > 0 }">
+        <template v-if="expired">{{ trans.routeExpired }}<template v-if="route.networks.length"> · {{ route.networks.join(' / ') }}</template></template>
+        <template v-else>{{ route.networks.join(' / ') || trans[statusKey[route.status] || 'routeUnknown'] }}</template>
+      </strong>
       <small v-if="route.hops.some(hop => hop.length)">ASN: {{ route.hops.map(hop => hop.length ? hop.map(asn => `AS${asn}`).join('|') : '*').join(' → ') }}</small>
       <small v-if="route.prefix_hints?.length">{{ trans.routeIpPrefix }}: {{ route.prefix_hints.map(hint => `${hint.network} (${hint.prefix})`).join(' / ') }}</small>
       <small v-if="route.transit_networks?.length">{{ trans.routeTransit }}: {{ route.transit_networks.join(' / ') }}</small>

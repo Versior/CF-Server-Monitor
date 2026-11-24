@@ -68,7 +68,7 @@ test('IPv6, CMI, 9929 and incomplete/unknown/failed evidence keep distinct state
   ]), 1000).report;
   assert.deepEqual(result.routes.map(route => route.status), ['detected', 'detected', 'partial', 'unknown', 'failed', 'disabled']);
   assert.deepEqual(result.routes[1].networks, ['CMI', 'CMIN2', 'CMNET']);
-  assert.deepEqual(automaticRouteTags(result, undefined, 1001), ['CU 9929 / 4837', 'CM CMI / CMIN2 / CMNET', 'CT CN2 / 163 (partial)']);
+  assert.deepEqual(automaticRouteTags(result, undefined, 1001), ['CU 9929 / 4837', 'CM CMI / CMIN2 / CMNET', 'CT CN2 / 163']);
   assert.deepEqual(automaticRouteTags(result, undefined, result.expires_at), []);
 });
 
