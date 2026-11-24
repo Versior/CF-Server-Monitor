@@ -160,12 +160,16 @@ export function useServerCardData(props) {
 
   const routeClock = ref(Date.now())
   const routeTimer = { id: null }
-  watch(() => props.server.route_report, report => {
-    clearTimeout(routeTimer.id)
+  const refreshRouteClock = report => {
     routeClock.value = Date.now()
     if (report && report.expires_at > routeClock.value) {
-      routeTimer.id = setTimeout(() => { routeClock.value = Date.now() }, report.expires_at - routeClock.value)
+      const delay = Math.min(report.expires_at - routeClock.value, 2147483647)
+      routeTimer.id = setTimeout(() => refreshRouteClock(report), delay)
     }
+  }
+  watch(() => props.server.route_report, report => {
+    clearTimeout(routeTimer.id)
+    refreshRouteClock(report)
   }, { immediate: true })
   onUnmounted(() => clearTimeout(routeTimer.id))
   const tagList = computed(() => {

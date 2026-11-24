@@ -17,7 +17,7 @@ const statusKey = { detected: 'routeDetected', partial: 'routePartial', unknown:
     <header><strong>{{ trans.routeDetection }}</strong><time>{{ new Date(report.checked_at).toLocaleString() }}</time></header>
     <p>{{ trans.routeScope }}</p>
     <div v-for="route in report.routes" :key="`${route.carrier}-${route.family}`" class="route-direction">
-      <span>{{ trans[{ ct: 'pingCt', cu: 'pingCu', cm: 'pingCm' }[route.carrier]] }} · IPv{{ route.family }}<small v-if="route.protocol" class="route-method">{{ trans.routeMethod }}: {{ route.protocol.toUpperCase() }} · {{ trans.routeAttempts }}: {{ route.attempts }}</small></span>
+      <span>{{ trans[{ ct: 'pingCt', cu: 'pingCu', cm: 'pingCm' }[route.carrier]] }} · IPv{{ route.family }}<small v-if="route.protocol" class="route-method">{{ trans.routeMethod }}: {{ route.protocol.toUpperCase() }} · {{ trans.routeAttempts }}: {{ route.attempts }}<template v-if="route.target_source === 'backup'"> · {{ trans.routeBackup }}</template></small></span>
       <strong :class="{ detected: !expired && route.status === 'detected' }">{{ expired ? trans.routeExpired : trans[statusKey[route.status]] }}<template v-if="route.networks.length"> · {{ route.networks.join(' / ') }}</template></strong>
       <small v-if="route.hops.some(hop => hop.length)">ASN: {{ route.hops.map(hop => hop.length ? hop.map(asn => `AS${asn}`).join('|') : '*').join(' → ') }}</small>
       <small v-if="route.prefix_hints?.length">{{ trans.routeIpPrefix }}: {{ route.prefix_hints.map(hint => `${hint.network} (${hint.prefix})`).join(' / ') }}</small>

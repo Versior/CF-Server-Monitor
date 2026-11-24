@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /opt/cfsm-route-detector/route-detector.py --config /etc/cfsm-route-detector.json
-TimeoutStartSec=15min
+TimeoutStartSec=18min
 NoNewPrivileges=true
 CapabilityBoundingSet=CAP_NET_RAW
 PrivateTmp=true

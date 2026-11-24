@@ -2,14 +2,14 @@
 
 线路检测由 **VPS 上的独立 Python 脚本、NextTrace 和 Worker** 配合完成，无需更换现有 cfsm-agent。未安装检测脚本的服务器继续使用手动标签。
 
-脚本从后台读取本台服务器的电信、联通、移动测试目标，继承项目的全局目标及节点覆盖配置；设置为 `0` 的目标不检测。使用有限次数的 TCP 或 ICMP traceroute，识别 CN2、163、CTGNET、4837、9929、CUG、CMI、CMIN2、CMNET，并记录 NTT、Cogent、Lumen、HE、Arelion、GTT、TATA、PCCW、Zayo 等国际网络。IPv4 默认开启，IPv6 可选。
+脚本默认检测广东电信、联通、移动，优先使用后台的全局目标及节点覆盖配置；设置为 `0` 的方向不检测。缺少对应骨干证据时才尝试广州同运营商的备用点。识别 CN2、163、CTGNET、4837、9929、CUG、CMI、CMIN2、CMNET，并记录 NTT、Cogent、Lumen、HE、Arelion、GTT、TATA、PCCW、Zayo 等国际网络。IPv4 默认开启，IPv6 可选。
 
 ## 检测结果的含义
 
-- 结果表示 **VPS 到当前配置目标的单向路径**。不表示另一方向，也不认证 GIA/GT、带宽、延迟或商家的线路等级。
+- 结果表示 **VPS 到主目标或备用目标的单向路径**。不表示另一方向，也不认证 GIA/GT、带宽、延迟或商家的线路等级。
 - 完整路径经过已知 ASN 时显示对应网络；混合网络会全部保留，例如 `CN2 / 163`。
 - 未到达目标时标记“路径未完成”，缺少已知 ASN 时显示“未识别”，执行失败显示“检测失败”。失败结果会替换旧记录。
-- 新上报结果有效期为 48 小时，过期后不再用于自动线路标签，为每天一次的检测保留调度延迟和短暂上报失败的余量。检测失败仍会替换旧记录并显示失败。
+- 每个启用方向都观察到对应骨干网络后，30 天内跳过线路探测和结果上报；有骨干证据的部分路径也算已识别，仍保留“路径未完成”标识。少了任一启用方向（包括仅见国际中转），继续按天补测。月度报告有效期 32 天，不齐全的报告有效期 48 小时；过期后不再用于自动标签。
 - 手动标签优先。没有手动标签时展示已完成检测的线路；已观测到网络但没有到达目标的路径会带有 `partial`／“路径未完成”标识。仅观测到国际网络时显示 `via`／“经”，中国骨干仍为未识别。详情显示检测时间、各方向状态、ASN 和 IP 段匹配来源。第三方主题可读取同样的数据。
 - IPv4 和 IPv6 分开记录。每个运营商最多检测两个地址族，不推断未检测的方向。
 
@@ -17,13 +17,13 @@ ASN 对照来自 [RIPEstat](https://stat.ripe.net/)，路径结构与 CLI 参数
 
 ## 覆盖率优化与参考
 
-本版参考了 [zhanghanyun/backtrace](https://github.com/zhanghanyun/backtrace/blob/55956a8447c0ce3c49c403d61d9837f71d3c2e00/asn.go) 的骨干接口段判断，以及 [oneclickvirt/backtrace](https://github.com/oneclickvirt/backtrace/blob/c1fb494a874716b439dea2d4d50a7c67ac03f30b/bk/route_classification.go) 对 CTGNET、CUG、CMIN2 和路径证据的处理。同类工具也使用多个城市和备用目标；本项目继续使用后台指定目标，以免把不同目标的结果混成一条线路。
+本版参考了 [zhanghanyun/backtrace](https://github.com/zhanghanyun/backtrace/blob/55956a8447c0ce3c49c403d61d9837f71d3c2e00/asn.go) 的骨干接口段判断，以及 [oneclickvirt/backtrace](https://github.com/oneclickvirt/backtrace/blob/3f44320a7274c5ac21baf509c7cbe924aa30e8dd/bk/route_report.go) 的多目标和回退做法。备用点取自该版本的[广州三网目标表](https://github.com/oneclickvirt/backtrace/blob/3f44320a7274c5ac21baf509c7cbe924aa30e8dd/model/model.go)，每个运营商、地址族各一个。
 
 - `scripts/route-networks.json` 是 Python 与 Worker 共用的规则表，包含 9 类中国网络、9 个常见国际网络和 13 个常见 IPv4 骨干接口段。AS58807 对应 CMIN2，AS58453 对应 CMI。
 - 对已回应且没有已知骨干 ASN 的跳，在 VPS 内存中按实际 IP 做最长前缀匹配。明确的骨干 ASN 优先，宽泛 CMI 段不会覆盖明确的 CMIN2 ASN。接口段匹配是辅助证据，与 ASN 记录分开，不凭服务器名称或目标运营商推断。
-- 先使用后台指定的探测协议。未得到骨干证据、路径未完成，或至少一半跳缺少 ASN／接口段证据时，切换 TCP／ICMP 再测一次。每跳最多 3 次探测；每方向最多 2 个进程，每个进程最多 60 秒。
+- 先对主目标使用后台指定的协议。缺少对应运营商骨干证据、路径未完成或超过一半跳缺少证据时，对同一目标切换 TCP／ICMP 再测一次。两次都没观测到对应骨干时，才对备用点做一次 ICMP。主目标单次最多 60 秒，备用点最多 45 秒，每跳最多 3 次探测。
 - 选取一条证据更充分的测量记录，不把两次探测的跳拼成一条虚构路径。第二次失败不会抹掉第一次的有效证据。两次都失败时仍记录失败。
-- IP 段匹配在本地执行，不为这些规则额外调用 GeoIP 服务。Worker 每轮仍只接收一次汇总上报；每天一次的定时器保持不变。
+- IP 段匹配在本地执行，不为这些规则额外调用 GeoIP 服务。定时器每天读取一次 Worker 的检测计划；无需重测时只做一次配置查询。
 
 没有回应 IP 的跳仍无法识别。接口段规则主要帮助“有 IP、缺少 ASN”的情况；IPv6 继续读取 NextTrace 的 ASN。识别率需要在实际 VPS 上验证，不保证每个目标都有完整路径。
 
@@ -47,13 +47,13 @@ curl -fsSL https://raw.githubusercontent.com/Versior/CF-Server-Monitor/main/scri
 
 已有 root/system Go 探针时，统一入口直接复用 `/etc/config/cf-probe/config.conf` 中的地址、ID 和凭据，保留原探针版本、配置与流量记录。只有探针尚未安装时才调用官方 Go 二进制的 `install`，无需分别执行两套安装命令。
 
-统一入口会检查或安装 Python、curl 和 CA 证书，验证 Worker 检测接口后安装两项服务、执行首轮线路检测，并启用每天一次的定时器。旧 Worker 返回网页、数据库尚未升级或上报凭据错误时会停止安装。线路结果是否完整、是否识别到已知 ASN，以节点网络详情为准。
+统一入口会检查或安装 Python、curl 和 CA 证书，验证 Worker 检测接口后安装两项服务，执行一次到期检查并启用定时器。旧 Worker 返回网页、数据库尚未升级或上报凭据错误时会停止安装。线路结果以节点网络详情为准。
 
 全新监控探针使用 **cfsm-agent v1.1.3**，线路检测使用 **NextTrace v1.7.6**；按官方 Release 的 SHA256 校验二进制后才执行。NextTrace 安装在 `/opt/cfsm-route-detector/nexttrace`，不覆盖系统已有的 NextTrace。检测到非 root、Docker、旧 Shell 或多实例探针时，统一入口会停止，避免重复上报；非 systemd 系统不使用此入口。
 
 重复运行无需先卸载：同一个 root/system 监控探针继续使用 `cf-probe.service`；线路检测会停止旧任务、覆盖原检测文件，再启用同一个 `cfsm-route-detector.timer`。监控和线路检测是两项不同服务，不会创建第二份同名监控探针。
 
-已有统一安装的 VPS，重新运行上面的命令即可升级为每天检测，并立即上报新的结果。只部署 Worker 不会修改 VPS 上已安装的定时器。新 Worker 为之后收到的结果设置 48 小时有效期，旧结果保留原来的到期时间；本次周期调整无需再次升级数据库。
+已有统一安装的 VPS，重新运行上面的命令即可使用备用目标和月度检测。旧版 48 小时报告会在更新后重新测一次，符合条件后进入月度周期。本次无需再次升级数据库。
 
 双栈检测在同一命令末尾加 `--ipv6`。无人值守首次安装可以使用 `--config /path/to/private.json`，文件权限须为 `600`：
 
@@ -105,7 +105,7 @@ sudoedit /etc/cfsm-route-detector.json
 sudo /usr/bin/python3 /opt/cfsm-route-detector/route-detector.py --config /etc/cfsm-route-detector.json
 ```
 
-再启用每天一次的自动检测：
+再启用每天一次的到期检查：
 
 ```sh
 sudo systemctl daemon-reload
@@ -114,9 +114,9 @@ systemctl list-timers cfsm-route-detector.timer
 sudo journalctl -u cfsm-route-detector.service --no-pager -n 20
 ```
 
-定时器在开机后执行首轮检测，之后每 24 小时运行一次，附加最多 5 分钟随机延迟以分散节点上报。单次最多六条方向，每条限 30 跳、每跳三次探测；必要时切换协议重测一次，两次进程合计最多 120 秒，整个服务超时 15 分钟。每次运行都读取当前后台目标；修改三网目标后可手动启动 `cfsm-route-detector.service`，无需修改脚本。systemd 不会同时运行同一个 oneshot 服务。日常监控探针的采集、延迟测试及指标上报频率不受此定时器影响。
+定时器在开机后检查，之后每 24 小时检查一次，附加最多 5 分钟随机延迟以分散负载。需要探测时最多测六个方向、每条 30 跳，整个服务超时 18 分钟。修改三网目标且希望立即刷新，可以运行上面的脚本命令并加上 `--force`。日常监控指标与延迟测试频率不受影响。
 
-已有单独安装的 VPS，重新下载并安装最新 `scripts/route-detector.timer` 后，执行以下命令使新周期生效，并立即上报首轮结果：
+已有单独安装的 VPS，更新探测脚本、规则表和两个 systemd 单元后，执行：
 
 ```sh
 sudo systemctl daemon-reload
@@ -131,11 +131,11 @@ systemctl list-timers cfsm-route-detector.timer
 sudo systemctl disable --now cfsm-route-detector.timer
 ```
 
-停止后，最后一次记录在自身的到期时间失效（新上报结果为检测后 48 小时），手动标签继续显示。
+停止后，最后一次记录在自身的到期时间失效，手动标签继续显示。
 
 ## 数据与认证
 
-`GET /update/routes?id=<server-id>` 返回本台服务器的有效测试目标；`POST /update/routes` 保存检测证据。两个接口都使用 `Authorization: Bearer <agent-secret>`，与现有 Agent 上报权限相同。App 访问口令和前端登录状态不能代替这个凭据。
+`GET /update/routes?id=<server-id>` 返回本台服务器的主目标、按地址族划分的备用点，以及 30 天内无需重测的 `covered_families`；`POST /update/routes` 保存检测证据。两个接口都使用 `Authorization: Bearer <agent-secret>`，与现有 Agent 上报权限相同。App 访问口令和前端登录状态不能代替这个凭据。
 
 POST 示例（无凭据、IP 地址或主机名）：
 
@@ -150,7 +150,7 @@ POST 示例（无凭据、IP 地址或主机名）：
 
 `carrier` 为 `ct/cu/cm`，`family` 为 `4/6`。客户端状态为 `ok/failed/disabled`；失败和禁用时 `hops` 必须为空、`completed` 必须为 `false`。Worker 重新计算识别结果，不接受客户端直接指定“GIA”或网络名称。
 
-公开 `/api/servers` 和 `/api/server` 新增 `route_report` 对象：`checked_at`、`expires_at`（毫秒时间戳）和 `routes`。每条方向包含 `carrier`、`family`、`status`（`detected/partial/unknown/failed/disabled`）、`completed`、`networks`、`hops`。新报告还包含 `prefix_hints`（`hop`、已知接口段 `prefix`、Worker 推导的 `network`）、`transit_networks`，以及 `protocol`、`attempts`。旧报告没有新字段时继续可读；这些字段保存在原 `route_report` JSON 中，无需再次升级数据库。未检测为 `null`。沿用现有私有站点及隐藏服务器的访问规则。
+公开 `/api/servers` 和 `/api/server` 的 `route_report` 对象包含 `checked_at`、`expires_at`（毫秒时间戳）和 `routes`。每条方向包含 `carrier`、`family`、`status`（`detected/partial/unknown/failed/disabled`）、`completed`、`networks`、`hops`、`prefix_hints`、`transit_networks`、`protocol` 和 `attempts`。选中备用目标的记录另有 `target_source: "backup"`。旧报告继续可读，无需再次升级数据库。未检测为 `null`。沿用现有私有站点及隐藏服务器的访问规则。
 
 Worker 保存 ASN 与规则表中的粗粒度接口段提示，不保存本次检测的完整跳 IP、路由器主机名、完整 NextTrace 输出或凭据。**NextTrace 本身可能向所选 GeoIP 服务查询各跳的地址**，按 NextTrace 官方数据服务说明配置。检测命令 stdout/stderr 被脚本捕获，不写入项目日志。
 

@@ -21,7 +21,7 @@ AGENT_BINARY = Path('/usr/local/bin/cf-probe')
 ROUTE_DIR = Path('/opt/cfsm-route-detector')
 ROUTE_CONFIG = Path('/etc/cfsm-route-detector.json')
 SYSTEMD_DIR = Path('/etc/systemd/system')
-SOURCE = 'https://raw.githubusercontent.com/Versior/CF-Server-Monitor/3cdcf896f0e9c0365d4674f09b289d60fd9dadfb/scripts'
+SOURCE = 'https://raw.githubusercontent.com/Versior/CF-Server-Monitor/ddc2d4787cb0ac3c8b5c0f3651a4bec14c68821a/scripts'
 AGENT_VERSION = 'v1.1.3'
 NEXTTRACE_VERSION = 'v1.7.6'
 HASHES = {
@@ -148,8 +148,8 @@ def install(config, values, stage, probe_needed):
     private_write(ROUTE_CONFIG, json.dumps({**config, 'nexttrace': str(ROUTE_DIR / 'nexttrace')}))
     run(['systemctl', 'daemon-reload'], secret)
     run(['systemctl', 'enable', '--now', 'cfsm-route-detector.timer'], secret)
-    print('监控服务已启动，正在执行首轮线路检测（最多约 15 分钟）…', flush=True)
-    run(['systemctl', 'start', 'cfsm-route-detector.service'], secret, timeout=960)
+    print('监控服务已启动，正在检查是否需要线路检测（探测最多约 18 分钟）…', flush=True)
+    run(['systemctl', 'start', 'cfsm-route-detector.service'], secret, timeout=1140)
     run(['systemctl', 'is-active', 'cf-probe.service'], secret)
     run(['systemctl', 'is-enabled', 'cfsm-route-detector.timer'], secret)
 
@@ -218,7 +218,7 @@ def main():
                      stage / 'cf-probe', HASHES[arch][0])
             (stage / 'cf-probe').chmod(0o755)
         install(config, values, stage, probe_needed)
-    print('安装完成：监控探针运行中，首轮线路结果已上报，以后每天检测一次。')
+    print('安装完成：监控探针运行中。三网都有证据后每 30 天复测，证据不足时每天补测。')
     print('请在节点网络详情查看识别结果；未完成或失败的路径会如实显示。')
 
 
