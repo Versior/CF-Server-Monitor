@@ -2,7 +2,7 @@ import { buildAgentConfig } from '../utils/agentConfig.js';
 import { clearServersListCache, getServerDetail } from '../utils/cache.js';
 import { loadSiteSettings } from '../utils/settings.js';
 import { createBadRequestResponse, createNotFoundResponse, createSuccessResponse, createUnauthorizedResponse } from '../utils/errors.js';
-import { normalizeRouteReport, ROUTE_REPORT_MAX_BYTES } from '../utils/routeDetection.js';
+import { BACKUP_ROUTE_TARGETS, coveredRouteFamilies, normalizeRouteReport, ROUTE_RECHECK_MS, ROUTE_REPORT_MAX_BYTES } from '../utils/routeDetection.js';
 
 export async function handleRouteDetection(request, env) {
   if (request.headers.get('Authorization') !== `Bearer ${env.API_SECRET}`) {
@@ -16,9 +16,15 @@ export async function handleRouteDetection(request, env) {
     if (!('route_report' in server)) return new Response('Database upgrade required', { status: 409 });
     const settings = await loadSiteSettings(env.DB);
     const config = buildAgentConfig(server, settings);
-    return createSuccessResponse({ targets: ['ct', 'cu', 'cm'].map(carrier => ({
-      carrier, target: config[`custom_${carrier}`], protocol: config.ping_mode || 'tcp'
-    })) }, { 'Cache-Control': 'no-store' });
+    const targets = ['ct', 'cu', 'cm'].map(carrier => ({
+      carrier, target: config[`custom_${carrier}`], protocol: config.ping_mode || 'tcp', backup: BACKUP_ROUTE_TARGETS[carrier]
+    }));
+    const report = server.route_report ? JSON.parse(server.route_report) : null;
+    const now = Date.now();
+    const covered_families = report && report.expires_at - report.checked_at > ROUTE_RECHECK_MS && now - report.checked_at < ROUTE_RECHECK_MS
+      ? coveredRouteFamilies(report.routes, targets.filter(item => item.target).map(item => item.carrier))
+      : [];
+    return createSuccessResponse({ targets, covered_families }, { 'Cache-Control': 'no-store' });
   }
 
   const reader = request.body?.getReader();

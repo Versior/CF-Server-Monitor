@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('detector', Path(__file__).parents[1] / 'scripts/route-detector.py')
 detector = importlib.util.module_from_spec(spec)
@@ -66,6 +67,37 @@ class RouteDetectorTests(unittest.TestCase):
         self.assertEqual(route['attempts'], 2)
         self.assertEqual(route['hops'], [[]])
         self.assertEqual(route['prefix_hints'], [{'hop': 0, 'prefix': '59.43.0.0/16'}])
+
+    def test_international_only_trace_tries_same_carrier_backup_and_keeps_one_path(self):
+        international = {'Hops': [[{'Success': True, 'Geo': {'asnumber': '6453'}}]],
+                         'StopReason': {'reason': 'destination_reached'}}
+        identified = {'Hops': [[{'Success': True, 'Geo': {'asnumber': '4837'}}]],
+                      'StopReason': {'reason': 'destination_reached'}}
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / 'nexttrace'
+            executable.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                                  f'print(json.dumps({international!r} if sys.argv[-1] == "cu.example.invalid" else {identified!r}))\n')
+            executable.chmod(0o755)
+            result = detector.collect({'id': 'demo', 'families': [4], 'nexttrace': str(executable)}, [
+                {'carrier': 'ct', 'target': '', 'protocol': 'tcp'},
+                {'carrier': 'cu', 'target': 'cu.example.invalid:443', 'protocol': 'tcp',
+                 'backup': {'4': 'backup.example.invalid'}},
+                {'carrier': 'cm', 'target': '', 'protocol': 'tcp'},
+            ])
+        route = result['routes'][1]
+        self.assertEqual((route['attempts'], route['target_source'], route['hops']), (3, 'backup', [[4837]]))
+        self.assertEqual(result['routes'][0]['attempts'], 0)
+
+    def test_current_three_carrier_reports_skip_traces_and_upload(self):
+        for covered, options, should_run in (([4], [], False), ([], [], True), ([4], ['--force'], True)):
+            with self.subTest(covered=covered, options=options), \
+                    patch.object(sys, 'argv', ['route-detector', '--config', 'test.json', *options]), \
+                    patch.object(detector, 'load_config', return_value={'families': [4]}), \
+                    patch.object(detector, 'api_request', return_value={'targets': [], 'covered_families': covered}) as api, \
+                    patch.object(detector, 'collect', return_value={'routes': []}) as collect:
+                self.assertEqual(detector.main(), 0)
+                self.assertEqual(collect.call_count, int(should_run))
+                self.assertEqual(api.call_count, 1 + int(should_run))
 
     def test_good_primary_path_stops_without_retry_and_failure_does_not_erase_evidence(self):
         good = {'Hops': [[{'Success': True, 'Geo': {'asnumber': '4809'}}]],

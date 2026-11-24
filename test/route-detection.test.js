@@ -112,8 +112,48 @@ test('configuration inherits site targets, honors disabled nodes and uses the se
   assert.equal(config.targets[0].target, 'ct.example.invalid:443');
   assert.equal(config.targets[1].target, '');
   assert.ok(config.targets[2].target);
+  assert.ok(config.targets[2].backup[4]);
   assert.equal(config.targets[0].protocol, 'icmp');
   assert.equal(JSON.stringify(config).includes(env.API_SECRET), false);
+});
+
+test('three carrier results remain visible through the monthly interval', () => {
+  const start = 1000;
+  const day = 86400000;
+  const full = normalizeRouteReport(report([
+    evidence(),
+    evidence({ carrier: 'cu', hops: [[4837]], protocol: 'icmp', attempts: 3, target_source: 'backup' }),
+    evidence({ carrier: 'cm', hops: [[58453]], completed: false })
+  ]), start).report;
+  assert.equal(full.routes[1].target_source, 'backup');
+  assert.equal(full.expires_at, start + 32 * day);
+  assert.equal(automaticRouteTags(full, undefined, start + 30 * day).length, 3);
+  const unrelated = normalizeRouteReport(report([
+    evidence(), evidence({ carrier: 'cu', hops: [[6453], [4134]] }), evidence({ carrier: 'cm', hops: [[58453]] })
+  ]), start).report;
+  assert.equal(unrelated.expires_at, start + 2 * day);
+});
+
+test('agent config skips traces only before the monthly deadline for the current enabled carriers', async () => {
+  const url = 'https://monitor.example.invalid/update/routes?id=routes-demo';
+  const headers = { Authorization: `Bearer ${env.API_SECRET}` };
+  const firstCheck = await (await handleRouteDetection(new Request(url, { headers }), env)).json();
+  assert.deepEqual(firstCheck.covered_families, []);
+  const payload = report([
+    evidence(),
+    evidence({ carrier: 'cu', status: 'disabled', completed: false, hops: [] }),
+    evidence({ carrier: 'cm', hops: [[9808]] })
+  ]);
+  assert.equal((await handleRouteDetection(request(payload), env)).status, 200);
+  assert.deepEqual((await (await handleRouteDetection(new Request(url, { headers }), env)).json()).covered_families, [4]);
+  const scheduled = normalizeRouteReport(payload, Date.now() - 30 * 86400000).report;
+  await db.prepare('UPDATE servers SET route_report = ? WHERE id = ?').bind(JSON.stringify(scheduled), payload.id).run();
+  clearAllCaches();
+  assert.deepEqual((await (await handleRouteDetection(new Request(url, { headers }), env)).json()).covered_families, []);
+  const legacy = { ...scheduled, checked_at: Date.now(), expires_at: Date.now() + 48 * 3600000 };
+  await db.prepare('UPDATE servers SET route_report = ? WHERE id = ?').bind(JSON.stringify(legacy), payload.id).run();
+  clearAllCaches();
+  assert.deepEqual((await (await handleRouteDetection(new Request(url, { headers }), env)).json()).covered_families, []);
 });
 
 test('real D1 writes preserve manual tags, replace failed results and invalidate the list cache', async () => {
