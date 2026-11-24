@@ -1,5 +1,5 @@
 [Unit]
-Description=Check CF-Server-Monitor routes daily
+Description=Check daily whether CF-Server-Monitor routes need tracing
 
 [Timer]
 OnBootSec=2min

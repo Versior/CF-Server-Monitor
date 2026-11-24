@@ -135,12 +135,12 @@ def parse_trace(text):
             'prefix_hints': list(prefix_hints.values())}
 
 
-def trace_score(trace):
+def trace_score(trace, carrier):
     networks = {ASN_NETWORKS[asn] for hop in trace['hops'] for asn in hop if asn in ASN_NETWORKS}
     networks.update(REGISTRY['prefix_networks'][hint['prefix']] for hint in trace['prefix_hints'])
     known_hops = {index for index, hop in enumerate(trace['hops']) if hop}
     known_hops.update(hint['hop'] for hint in trace['prefix_hints'])
-    return bool(networks), trace['completed'], len(networks), len(known_hops)
+    return bool(networks.intersection(REGISTRY['carriers'][carrier])), bool(networks), trace['completed'], len(networks), len(known_hops)
 
 
 def collect(config, targets):
@@ -159,23 +159,31 @@ def collect(config, targets):
                 continue
             route['status'] = 'failed'
             best_score = None
-            protocols = (target['protocol'], 'icmp' if target['protocol'] == 'tcp' else 'tcp')
-            for attempt, protocol in enumerate(protocols, 1):
+            alternate = 'icmp' if target['protocol'] == 'tcp' else 'tcp'
+            candidates = [(target['target'], target['protocol']), (target['target'], alternate)]
+            backup = target.get('backup', {}).get(str(family))
+            if backup and target_address(backup)[0] != target_address(target['target'])[0]:
+                candidates.append((backup, 'icmp'))
+            for attempt, (address, protocol) in enumerate(candidates, 1):
+                if attempt == 3 and best_score and best_score[0]:
+                    break
                 route['attempts'] = attempt
-                command = trace_command(config['nexttrace'], target['target'], family, protocol)
+                command = trace_command(config['nexttrace'], address, family, protocol)
                 try:
-                    process = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                    process = subprocess.run(command, capture_output=True, text=True, timeout=45 if attempt == 3 else 60,
                                              env={key: value for key, value in os.environ.items() if key != 'NEXTTRACE_UNINTERRUPTED'})
                     if process.returncode:
                         raise ValueError('Trace failed')
                     trace = parse_trace(process.stdout)
                 except (subprocess.TimeoutExpired, OSError, ValueError):
                     continue
-                score = trace_score(trace)
+                score = trace_score(trace, target['carrier'])
                 if best_score is None or score > best_score:
                     route.update(trace, status='ok', protocol=protocol)
+                    if attempt == 3:
+                        route['target_source'] = 'backup'
                     best_score = score
-                if score[0] and score[1] and score[3] * 2 >= len(trace['hops']):
+                if score[0] and score[2] and score[4] * 2 >= len(trace['hops']):
                     break
     return {'id': config['id'], 'routes': routes}
 
@@ -183,11 +191,15 @@ def collect(config, targets):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, help='Private JSON config file (mode 600)')
+    parser.add_argument('--force', action='store_true', help='Run even when a complete recent report exists')
     args = parser.parse_args()
     try:
         config = load_config(args.config)
-        targets = api_request(config)['targets']
-        report = collect(config, targets)
+        plan = api_request(config)
+        if not args.force and set(config['families']).issubset(plan.get('covered_families', [])):
+            print('Current carrier evidence is still within the 30-day interval. No traces run.')
+            return 0
+        report = collect(config, plan['targets'])
         api_request(config, report)
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
