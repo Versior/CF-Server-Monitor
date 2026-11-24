@@ -1,7 +1,5 @@
 export default {
   routeDetection: "Deteksi rute",
-  routeDetected: "Terdeteksi",
-  routePartial: "Jalur belum lengkap",
   routeUnknown: "Tidak teridentifikasi",
   routeFailed: "Deteksi gagal",
   routeDisabled: "Dinonaktifkan",

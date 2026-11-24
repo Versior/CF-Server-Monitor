@@ -1,7 +1,5 @@
 export default {
   routeDetection: "Detección de rutas",
-  routeDetected: "Identificado",
-  routePartial: "Ruta incompleta",
   routeUnknown: "Sin identificar",
   routeFailed: "Detección fallida",
   routeDisabled: "Desactivado",

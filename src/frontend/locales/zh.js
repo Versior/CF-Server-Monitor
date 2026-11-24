@@ -1,7 +1,5 @@
 export default {
   routeDetection: "自动线路检测",
-  routeDetected: "已识别",
-  routePartial: "路径未完成",
   routeUnknown: "未识别",
   routeFailed: "检测失败",
   routeDisabled: "已关闭",
