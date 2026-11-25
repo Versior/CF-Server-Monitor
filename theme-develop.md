@@ -109,14 +109,14 @@ my-theme/
 
 ### 0.3 版本升级提示
 
-`GET /api/config` 会返回当前 Workers 版本 `version`。当请求带有有效 JWT 时，后端还会查询远程最新版并额外返回：
+`GET /api/config` 会返回当前 Workers 版本 `version`。当请求带有有效 JWT 时，还会返回最近一次查到的远程版本：
 
 - `last_workers_version`：最新 Workers 版本
 - `last_agent_version`：最新探针 Agent 版本
 
 第三方主题可以将 `version` 与 `last_workers_version` 做字符串比较，自行决定是否展示 Workers 升级提示。`last_agent_version` 仅在登录后返回，可用于可选的 Agent 版本提示。
 
-未登录访问 `/api/config` 时不会返回 `last_workers_version` / `last_agent_version`，自定义主题不要依赖匿名请求展示升级提示。
+远程查询在后台刷新，不会阻塞配置响应。没有查到版本时字段为 `null`；未登录访问时不会返回这两个字段。
 
 ***
 
