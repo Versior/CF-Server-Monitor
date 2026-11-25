@@ -438,7 +438,7 @@ Headers: (按需) Authorization, X-Turnstile-Token/Verified
       ]
     }
   ],
-  "sysConfig": { "long_history_points": 120 }
+  "sysConfig": { "long_history_points": 120, "show_price": true, "show_expire": true, "show_tf": true, "show_three_net_details": true }
 }
 ```
 

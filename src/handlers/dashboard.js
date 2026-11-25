@@ -179,6 +179,15 @@ async function getRealtimeStateForServers(env, serverIds) {
   };
 }
 
+function publicDisplaySwitches(sys) {
+  return {
+    show_price: sys.show_price === 'true',
+    show_expire: sys.show_expire === 'true',
+    show_tf: sys.show_tf === 'true',
+    show_three_net_details: sys.show_three_net_details === 'true'
+  };
+}
+
 export async function handleServerAPI(request, env, sys) {
   const isLoggedIn = await checkAuth(request, env, sys);
   // App 口令只放宽可见范围（私有站点、隐藏服务器），与登录态等价，不涉及管理操作。
@@ -204,6 +213,7 @@ export async function handleServerAPI(request, env, sys) {
   mergeMetricsIntoServer(server, latestMetrics);
   server.latestReportUpdates = realtimeState.latestReportUpdates;
   server.sysConfig = {
+    ...publicDisplaySwitches(sys),
     long_history_points: Number(normalizeLongHistoryPoints(sys.long_history_points))
   };
   
@@ -279,10 +289,7 @@ export async function handleServersAPI(request, env, sys) {
     },
     regionStats,
     sysConfig: {
-      show_price: sys.show_price === 'true',
-      show_expire: sys.show_expire === 'true',
-      show_tf: sys.show_tf === 'true',
-      show_three_net_details: sys.show_three_net_details === 'true',
+      ...publicDisplaySwitches(sys),
       custom_ct_name: sys.custom_ct_name || '电信',
       custom_cu_name: sys.custom_cu_name || '联通',
       custom_cm_name: sys.custom_cm_name || '移动',

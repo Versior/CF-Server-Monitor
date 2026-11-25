@@ -170,6 +170,14 @@ test('real D1 writes preserve manual tags, replace failed results and invalidate
   assert.equal(JSON.parse((await getAllServers(db))[0].route_report).routes[0].status, 'failed');
 });
 
+test('direct server detail exposes only the four listing visibility switches without fetching the list', async () => {
+  const sys = { is_public: 'true', show_price: 'false', show_expire: 'true', show_tf: 'false', show_three_net_details: 'true' };
+  const result = await handleServerAPI(new Request('https://monitor.example.invalid/api/server?id=routes-demo'), env, sys);
+  assert.equal(result.status, 200);
+  const { sysConfig } = await result.json();
+  assert.deepEqual(sysConfig, { long_history_points: 120, show_price: false, show_expire: true, show_tf: false, show_three_net_details: true });
+});
+
 test('public list and detail return typed reports while hidden nodes retain access control', async () => {
   const sys = { is_public: 'true', show_three_net_details: 'false' };
   const detail = await (await handleServerAPI(new Request('https://monitor.example.invalid/api/server?id=routes-demo'), env, sys)).json();
