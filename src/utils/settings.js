@@ -882,6 +882,10 @@ export function isValidThemeOptions(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+export function isValidThemeOptionsPatch(value) {
+  return typeof value?.namespace === 'string' && /^[a-zA-Z0-9_-]+$/.test(value.namespace) && isValidThemeOptions(value.options);
+}
+
 export async function saveThemeOptions(db, themeOptions) {
   await db.prepare(
     `INSERT INTO settings (key, value)
@@ -902,6 +906,26 @@ export async function saveThemeOptions(db, themeOptions) {
 
   clearAppearanceSettingsCache();
   return themeOptions;
+}
+
+export async function patchThemeOptions(db, themeNamespace, options) {
+  const row = await db.prepare(
+    `INSERT INTO settings (key, value)
+     VALUES ('appearance_options', json_object('theme_options', json_patch('{}', json_object(?1, json(?2)))))
+     ON CONFLICT(key) DO UPDATE SET value = CASE
+       WHEN json_valid(value) THEN CASE
+         WHEN json_type(value) = 'object' THEN json_set(value, '$.theme_options', json_patch(
+           CASE WHEN json_type(value, '$.theme_options') = 'object' THEN json_extract(value, '$.theme_options') ELSE '{}' END,
+           json_object(?1, json(?2))
+         ))
+         ELSE excluded.value
+       END
+       ELSE excluded.value
+     END
+     RETURNING json_extract(value, '$.theme_options') AS theme_options`
+  ).bind(themeNamespace, JSON.stringify(options)).first();
+  clearAppearanceSettingsCache();
+  return JSON.parse(row.theme_options);
 }
 
 // 导入外观设置时按字段合并写入，避免只带部分字段的备份把未涉及的字段清空。

@@ -223,6 +223,7 @@ Headers: (可选) Authorization: Bearer <jwt>, X-Turnstile-Token / X-Turnstile-V
 | `preferred_theme`    | string       | 默认外观：`auto` 跟随系统 / `dark` 深色 / `light` 浅色 |
 | `default_language`   | string       | 默认语言：`auto` 按浏览器语言自动选择中文或英文 / `zh` 中文 / `en` 英文 |
 | `theme_options`      | object       | 第三方主题自定义配置；未配置时为空对象 |
+| `theme_options_patch` | boolean（可选） | 为 `true` 时支持按主题原子更新配置；未声明则仅支持完整对象写入 |
 | `verified`           | boolean      | 当前请求是否已验证       |
 | `turnstile_verified` | string\|null | 已验证凭证，缓存复用 1 小时 |
 | `frontend_ws_timeout_minutes` | number | 前端实时订阅连接超时分钟数，范围 `0`-`1440`；默认 `0` 表示不超时 |
@@ -261,6 +262,14 @@ Headers: Authorization: Bearer <jwt>, Content-Type: application/json, X-Turnstil
   }
 }
 ```
+
+完整对象写入会替换整个 `theme_options`。若 `/api/config` 声明 `theme_options_patch: true`，可在同一接口只更新自己的命名空间：
+
+```json
+{ "theme_options_patch": { "namespace": "aether", "options": { "layout": "compact" } } }
+```
+
+`namespace` 是非空的字母、数字、下划线或连字符组合，`options` 必须是对象。该格式和完整写入互斥。Worker 在一次 D1 写入中按 JSON Merge Patch 合并：未提交的键保留，`null` 删除键，数组整体替换。不同主题并发使用补丁不会互相覆盖；响应为这次写入后的完整 `theme_options`。原版 Worker 没有这项能力，必须先读取其当前配置，再合并并发送完整对象；读取和写入之间的并发修改仍可能丢失。
 
 **Response**
 
@@ -807,6 +816,7 @@ interface SiteConfig {
   turnstile_site_key: string;
   site_title: string;
   theme_options: Record<string, unknown>;
+  theme_options_patch?: boolean;
   verified: boolean;
   turnstile_verified: string | null;
   frontend_ws_timeout_minutes: number;

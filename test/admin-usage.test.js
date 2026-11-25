@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Miniflare } from 'miniflare';
+import worker from '../src/index.js';
 import {
   estimateDurableObjectsBillableRequests,
   handleAdminAPI,
@@ -9,6 +10,7 @@ import {
 import { generateToken } from '../src/middleware/auth.js';
 import {
   isValidThemeOptions,
+  loadSiteSettings,
   saveThemeOptions
 } from '../src/utils/settings.js';
 
@@ -272,6 +274,41 @@ try {
     { id: secondServerId, sort_order: 0 },
     { id: firstServerId, sort_order: 1 }
   ]);
+
+  const env = { DB: d1, API_SECRET: crypto.randomUUID() };
+  const endpoint = 'https://monitor.example.invalid/api';
+  const bootstrap = async () => {
+    const response = await worker.fetch(new Request(`${endpoint}/config`), env, {});
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const initial = await bootstrap();
+  assert.equal(initial.theme_options_patch, true);
+  const token = await generateToken(env, await loadSiteSettings(d1));
+  const write = (body, loggedIn = true) => worker.fetch(new Request(`${endpoint}/theme_options`, {
+    method: 'POST', headers: loggedIn ? { Authorization: `Bearer ${token}` } : {}, body: JSON.stringify(body)
+  }), env, {});
+  const patch = (namespace, options) => ({ theme_options_patch: { namespace, options } });
+  assert.equal((await write(patch('aether', {}), false)).status, 401);
+  for (const body of [patch('aether', []), patch('', {}), { ...patch('aether', {}), theme_options: {} }]) {
+    assert.equal((await write(body)).status, 400);
+  }
+  await d1.prepare("DELETE FROM settings WHERE key = 'appearance_options'").run();
+  assert.deepEqual((await (await write(patch('aether', { layout: 'compact', removed: null }))).json()).theme_options, { aether: { layout: 'compact' } });
+  await d1.prepare("UPDATE settings SET value = json_set(value, '$.site_title', ?) WHERE key = 'appearance_options'").bind('untouched title').run();
+  assert.deepEqual((await bootstrap()).theme_options, { aether: { layout: 'compact' } });
+  const previous = { aether: { layout: 'compact', unknown: 'preserved' }, extras: { filters: [1, 2], note: null } };
+  assert.deepEqual((await (await write({ theme_options: previous })).json()).theme_options, previous);
+  const edits = await Promise.all([write(patch('aether', { layout: 'full' })), write(patch('neighbor', { colors: ['green'] }))]);
+  const replies = await Promise.all(edits.map(async response => {
+    assert.equal(response.status, 200);
+    return (await response.json()).theme_options;
+  }));
+  const expected = { ...previous, aether: { layout: 'full', unknown: 'preserved' }, neighbor: { colors: ['green'] } };
+  assert.ok(replies.some(options => options.aether.layout === 'full' && options.neighbor?.colors[0] === 'green'));
+  const after = await bootstrap();
+  assert.deepEqual(after.theme_options, expected);
+  assert.equal(after.site_title, 'untouched title');
 } finally {
   await miniflare.dispose();
 }

@@ -7,7 +7,7 @@ import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } fr
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
 import { handleRouteDetection } from './handlers/routeDetection.js';
-import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
+import { isValidThemeOptions, isValidThemeOptionsPatch, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, patchThemeOptions, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, hasAppPasswordAccess, simpleAuthResponse } from './middleware/auth.js';
 import { getServerDetail, getMetricsHistoryCache, setMetricsHistoryCache, getCacheDuration } from './utils/cache.js';
@@ -343,6 +343,7 @@ export default {
           preferred_theme: appearanceOptions.preferred_theme || 'auto',
           default_language: appearanceOptions.default_language || 'auto',
           theme_options: appearanceOptions.theme_options || {},
+          theme_options_patch: true,
           verified: verified,
           turnstile_verified: turnstileVerified,
           frontend_ws_timeout_minutes: Number(normalizeFrontendWsTimeoutMinutes(sys.frontend_ws_timeout_minutes)),
@@ -383,12 +384,16 @@ export default {
           return createBadRequestResponse('invalidJson');
         }
 
-        const themeOptions = data?.theme_options;
-        if (!isValidThemeOptions(themeOptions)) {
+        const patch = data?.theme_options_patch;
+        let themeOptions;
+        if (patch !== undefined && data.theme_options === undefined && isValidThemeOptionsPatch(patch)) {
+          themeOptions = await patchThemeOptions(env.DB, patch.namespace, patch.options);
+        } else if (patch === undefined && isValidThemeOptions(data?.theme_options)) {
+          themeOptions = await saveThemeOptions(env.DB, data.theme_options);
+        } else {
           return createBadRequestResponse('invalidThemeOptionsFormat');
         }
 
-        await saveThemeOptions(env.DB, themeOptions);
         sys.theme_options = themeOptions;
         return createSuccessResponse({
           success: true,
