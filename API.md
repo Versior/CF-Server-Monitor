@@ -587,8 +587,8 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 | `default_language`   | string       | 默认语言：`auto` 按浏览器语言自动选择中文或英文 / `zh` 中文 / `en` 英文 |
 | `verified`           | boolean      | 当前 Turnstile 验证状态；有效的验证凭证或本次成功验证的 Token 均可使其为 `true` |
 | `turnstile_verified` | string\|null | 当次验证成功后回写给客户端的"已验证凭证"，客户端应回存并在 1 小时内复用 |
-| `last_workers_version` | string\|null | **仅登录时出现**；远程最新 Workers 版本，来源为 GitHub `version.json`，后端缓存 5 分钟 |
-| `last_agent_version` | string\|null | **仅登录时出现**；远程最新 Agent 版本，来源为 GitHub `version.json`，后端缓存 5 分钟 |
+| `last_workers_version` | string\|null | **仅登录时出现**；最近一次从 GitHub `version.json` 取得的 Workers 版本。后台刷新，首次成功前为 `null` |
+| `last_agent_version` | string\|null | **仅登录时出现**；最近一次从 GitHub Releases 取得的 Agent 版本。后台刷新，首次成功前为 `null` |
 | `theme_options`      | object       | 第三方主题自定义配置；未配置时为空对象，匿名请求也会返回 |
 | `frontend_ws_timeout_minutes` | number | 前端实时订阅连接超时分钟数，范围 `0`-`1440`；默认 `0` 表示不超时 |
 | `long_history_points` | number      | 长历史查询返回的采样点数，后台可选 `60`、`120`、`180`、`240` |

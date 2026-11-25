@@ -7,73 +7,53 @@ const REMOTE_VERSION_FETCH_TIMEOUT_MS = 2000;
 let cachedRemoteVersion = null;
 let cachedRemoteVersionAt = 0;
 let cachedRemoteVersionFailureAt = 0;
-let remoteVersionPromise = null;
+let refreshing = false;
 
-export async function getRemoteVersion() {
+// Version hints are optional; serve cached data while the owning request refreshes it.
+export function getRemoteVersion(ctx) {
   const now = Date.now();
-  if (cachedRemoteVersion && now - cachedRemoteVersionAt < REMOTE_VERSION_TTL) {
-    return cachedRemoteVersion;
+  if (!refreshing &&
+      (!cachedRemoteVersion || now - cachedRemoteVersionAt >= REMOTE_VERSION_TTL) &&
+      (!cachedRemoteVersionFailureAt || now - cachedRemoteVersionFailureAt >= REMOTE_VERSION_FAILURE_TTL)) {
+    refreshing = true;
+    ctx.waitUntil(fetchRemoteVersion().finally(() => { refreshing = false; }));
   }
-  if (cachedRemoteVersionFailureAt && now - cachedRemoteVersionFailureAt < REMOTE_VERSION_FAILURE_TTL) {
-    return cachedRemoteVersion;
-  }
-  if (remoteVersionPromise) {
-    return remoteVersionPromise;
-  }
-
-  remoteVersionPromise = fetchRemoteVersion(now).finally(() => {
-    remoteVersionPromise = null;
-  });
-
-  return remoteVersionPromise;
+  return cachedRemoteVersion;
 }
 
-async function fetchRemoteVersion(now) {
-  try {
-    const [versionRes, releaseRes] = await Promise.allSettled([
-      fetchWithTimeout(REMOTE_VERSION_URL, { headers: { Accept: 'application/json' } }),
-      fetchWithTimeout(AGENT_RELEASE_URL, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CF-Server-Monitor' } })
-    ]);
+async function fetchRemoteVersion() {
+  const [version, release] = await Promise.allSettled([
+    fetchJsonWithTimeout(REMOTE_VERSION_URL, { Accept: 'application/json' }),
+    fetchJsonWithTimeout(AGENT_RELEASE_URL, { Accept: 'application/vnd.github+json', 'User-Agent': 'CF-Server-Monitor' })
+  ]);
 
-    let workers;
-    let agent;
-
-    if (versionRes.status === 'fulfilled' && versionRes.value.ok) {
-      const data = await versionRes.value.json();
-      workers = typeof data.workers === 'string' ? data.workers : '';
-    }
-
-    if (releaseRes.status === 'fulfilled' && releaseRes.value.ok) {
-      const release = await releaseRes.value.json();
-      const tag = typeof release.tag_name === 'string' ? release.tag_name.trim() : '';
-      if (tag) {
-        agent = tag;
-      }
-    }
-
-    if (workers === undefined && agent === undefined) {
-      cachedRemoteVersionFailureAt = Date.now();
-      return cachedRemoteVersion;
-    }
-
-    cachedRemoteVersion = {
-      workers: workers !== undefined ? workers : (cachedRemoteVersion?.workers || ''),
-      agent: agent !== undefined ? agent : (cachedRemoteVersion?.agent || '')
-    };
-    cachedRemoteVersionAt = now;
-    cachedRemoteVersionFailureAt = 0;
-    return cachedRemoteVersion;
-  } catch (_) {
+  const workers = version.status === 'fulfilled' && typeof version.value?.workers === 'string'
+    ? version.value.workers.trim() : '';
+  const agent = release.status === 'fulfilled' && typeof release.value?.tag_name === 'string'
+    ? release.value.tag_name.trim() : '';
+  if (!workers && !agent) {
     cachedRemoteVersionFailureAt = Date.now();
-    return cachedRemoteVersion;
+    return;
   }
+
+  cachedRemoteVersion = {
+    workers: workers || cachedRemoteVersion?.workers || null,
+    agent: agent || cachedRemoteVersion?.agent || null
+  };
+  cachedRemoteVersionAt = Date.now();
+  cachedRemoteVersionFailureAt = 0;
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = REMOTE_VERSION_FETCH_TIMEOUT_MS) {
+async function fetchJsonWithTimeout(url, headers) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), REMOTE_VERSION_FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
+    return await response.json();
   } finally {
     clearTimeout(timeout);
   }

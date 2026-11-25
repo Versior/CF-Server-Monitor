@@ -317,7 +317,7 @@ export default {
         }
 
         const isLoggedIn = await checkAuth(request, env, sys);
-        const remoteVersion = isLoggedIn ? await getRemoteVersion() : null;
+        const remoteVersion = isLoggedIn ? getRemoteVersion(ctx) : null;
 
         return createSuccessResponse({
           version: CURRENT_VERSION,
