@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { ref } from 'vue';
+import { compileScript, parse } from 'vue/compiler-sfc';
 import { Miniflare } from 'miniflare';
 import worker from '../src/index.js';
+import { STORAGE } from '../src/frontend/utils/constants.js';
+import * as themeOptions from '../src/frontend/utils/themeOptions.js';
 import {
   estimateDurableObjectsBillableRequests,
   handleAdminAPI,
@@ -13,6 +18,20 @@ import {
   loadSiteSettings,
   saveThemeOptions
 } from '../src/utils/settings.js';
+
+function openThemePanel(appConfig, http, token) {
+  const source = readFileSync(new URL('../src/frontend/components/ThemeConfigButton.vue', import.meta.url), 'utf8');
+  const script = compileScript(parse(source).descriptor, { id: 'theme-panel-test' }).content;
+  const bindings = {
+    ...themeOptions, ref, STORAGE, http,
+    inject: () => appConfig, onUnmounted() {}, useTranslation: () => ref({}),
+    window: new EventTarget(), localStorage: { getItem: key => key === STORAGE.JWT_TOKEN ? token : null }
+  };
+  const compile = new Function(...Object.keys(bindings), script.replace(/^import [\s\S]*? from ['"][^'"]+['"];?$/gm, '').replace('export default', 'return'));
+  const panel = compile(...Object.values(bindings)).setup({}, { expose() {} });
+  panel.openModal();
+  return panel;
+}
 
 function makeSettingsDb(initialRows = {}) {
   const store = new Map(Object.entries(initialRows));
@@ -284,6 +303,7 @@ try {
   };
   const initial = await bootstrap();
   assert.equal(initial.theme_options_patch, true);
+  assert.equal(initial.theme_options_builtin_patch, true);
   const token = await generateToken(env, await loadSiteSettings(d1));
   const write = (body, loggedIn = true) => worker.fetch(new Request(`${endpoint}/theme_options`, {
     method: 'POST', headers: loggedIn ? { Authorization: `Bearer ${token}` } : {}, body: JSON.stringify(body)
@@ -299,6 +319,17 @@ try {
   assert.deepEqual((await bootstrap()).theme_options, { aether: { layout: 'compact' } });
   const previous = { aether: { layout: 'compact', unknown: 'preserved' }, extras: { filters: [1, 2], note: null } };
   assert.deepEqual((await (await write({ theme_options: previous })).json()).theme_options, previous);
+  const openConfig = await bootstrap();
+  const panelWrites = [];
+  const panel = openThemePanel(openConfig, {
+    async post(path, body) {
+      assert.equal(path, '/api/theme_options');
+      panelWrites.push(body);
+      const response = await write(body);
+      assert.equal(response.status, 200);
+      return { data: await response.json() };
+    }
+  }, token);
   const edits = await Promise.all([write(patch('aether', { layout: 'full' })), write(patch('neighbor', { colors: ['green'] }))]);
   const replies = await Promise.all(edits.map(async response => {
     assert.equal(response.status, 200);
@@ -309,6 +340,54 @@ try {
   const after = await bootstrap();
   assert.deepEqual(after.theme_options, expected);
   assert.equal(after.site_title, 'untouched title');
+
+  assert.deepEqual(openConfig.theme_options, previous);
+  panel.setPreset('ocean');
+  panel.stepCount(2);
+  await panel.saveConfig();
+  const builtinOptions = { three_net_panel_count: 5, color_preset: 'ocean' };
+  const stored = { ...expected, ...builtinOptions };
+  assert.deepEqual((await bootstrap()).theme_options, stored);
+  assert.deepEqual(openConfig.theme_options, stored);
+  assert.deepEqual(panelWrites, [{ theme_options_patch: { options: builtinOptions } }]);
+  assert.equal((await write(panelWrites[0], false)).status, 401);
+  for (const options of [{ ...builtinOptions, aether: {} }, { three_net_panel_count: -1 }, { color_preset: false }]) {
+    assert.equal((await write({ theme_options_patch: { options } })).status, 400);
+  }
+  assert.deepEqual((await bootstrap()).theme_options, stored);
+
+  panel.openModal();
+  assert.equal((await write({ theme_options_patch: { options: { three_net_panel_count: 2 } } })).status, 200);
+  panel.setPreset('graphite');
+  await panel.saveConfig();
+  assert.deepEqual(panelWrites[1], { theme_options_patch: { options: { color_preset: 'graphite' } } });
+  const onlyColorChanged = { ...stored, three_net_panel_count: 2, color_preset: 'graphite' };
+  assert.deepEqual((await bootstrap()).theme_options, onlyColorChanged);
+
+  const legacyConfig = async () => {
+    const config = await bootstrap();
+    delete config.theme_options_builtin_patch;
+    return config;
+  };
+  const legacyRequests = [];
+  const legacyPanel = openThemePanel(await legacyConfig(), {
+    async get(path) {
+      legacyRequests.push(['GET', path]);
+      return { data: await legacyConfig() };
+    },
+    async post(path, body) {
+      legacyRequests.push(['POST', path, body]);
+      const response = await write(body);
+      assert.equal(response.status, 200);
+      return { data: await response.json() };
+    }
+  }, token);
+  assert.equal((await write(patch('aether', { layout: 'compact' }))).status, 200);
+  legacyPanel.stepCount(1);
+  await legacyPanel.saveConfig();
+  const legacySaved = { ...onlyColorChanged, three_net_panel_count: 3, aether: { ...stored.aether, layout: 'compact' } };
+  assert.deepEqual(legacyRequests, [['GET', '/api/config'], ['POST', '/api/theme_options', { theme_options: legacySaved }]]);
+  assert.deepEqual((await bootstrap()).theme_options, legacySaved);
 } finally {
   await miniflare.dispose();
 }

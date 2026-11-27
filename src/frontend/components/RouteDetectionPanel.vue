@@ -1,9 +1,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useTranslation } from '../utils/i18n.js'
+import { routeCarrierNames } from '../utils/routeDetection.js'
 
-const props = defineProps({ report: { type: Object, default: null } })
+const props = defineProps({ report: { type: Object, default: null }, config: { type: Object, default: null } })
 const trans = useTranslation()
+const carrierNames = computed(() => routeCarrierNames(props.config, trans.value))
 const now = ref(Date.now())
 const runtime = { timer: null }
 onMounted(() => { runtime.timer = setInterval(() => { now.value = Date.now() }, 60000) })
@@ -13,11 +15,11 @@ const statusKey = { unknown: 'routeUnknown', failed: 'routeFailed', disabled: 'r
 </script>
 
 <template>
-  <section v-if="report" class="route-detection" aria-label="Route detection">
+  <section v-if="report" class="route-detection" :aria-label="trans.routeDetection">
     <header><strong>{{ trans.routeDetection }}</strong><time>{{ new Date(report.checked_at).toLocaleString() }}</time></header>
     <p>{{ trans.routeScope }}</p>
     <div v-for="route in report.routes" :key="`${route.carrier}-${route.family}`" class="route-direction">
-      <span>{{ trans[{ ct: 'pingCt', cu: 'pingCu', cm: 'pingCm' }[route.carrier]] }} · IPv{{ route.family }}<small v-if="route.protocol" class="route-method">{{ trans.routeMethod }}: {{ route.protocol.toUpperCase() }} · {{ trans.routeAttempts }}: {{ route.attempts }}<template v-if="route.target_source === 'backup'"> · {{ trans.routeBackup }}</template></small></span>
+      <span>{{ carrierNames[route.carrier] }} · IPv{{ route.family }}<small v-if="route.protocol" class="route-method">{{ trans.routeMethod }}: {{ route.protocol.toUpperCase() }} · {{ trans.routeAttempts }}: {{ route.attempts }}<template v-if="route.target_source === 'backup'"> · {{ trans.routeBackup }}</template></small></span>
       <strong :class="{ detected: !expired && route.networks.length > 0 }">
         <template v-if="expired">{{ trans.routeExpired }}<template v-if="route.networks.length"> · {{ route.networks.join(' / ') }}</template></template>
         <template v-else>{{ route.networks.join(' / ') || trans[statusKey[route.status] || 'routeUnknown'] }}</template>

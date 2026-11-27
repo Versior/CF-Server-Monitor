@@ -2,9 +2,10 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { formatBytes, getFlagRegionCode, isServerOnline } from '../utils/api'
 import { getPublicAssetUrl } from '../utils/config'
 import { currentLang, useTranslation } from '../utils/i18n'
+import { getThreeNetPanelCount } from '../utils/themeOptions'
 import { LATENCY_WINDOW, PING } from '../utils/constants'
 import { formatBillingPrice } from '../utils/server.js'
-import { automaticRouteTags } from '../utils/routeDetection.js'
+import { automaticRouteTags, routeCarrierNames } from '../utils/routeDetection.js'
 
 export const DEFAULT_SERVER_CARD_CONFIG = {
   show_price: true,
@@ -20,10 +21,10 @@ export const DEFAULT_SERVER_CARD_CONFIG = {
 
 // 首页三网面板的候选节点，按展示优先级排列；loss 末条为 false（后台设为 0）时跳过。
 const THREE_NET_DEFS = [
-  { key: 'ct', pingField: 'ping_ct', lossField: 'loss_ct', nameKey: 'custom_ct_name', labelKey: 'pingCt', fallbackLabel: 'CT' },
-  { key: 'cu', pingField: 'ping_cu', lossField: 'loss_cu', nameKey: 'custom_cu_name', labelKey: 'pingCu', fallbackLabel: 'CU' },
-  { key: 'cm', pingField: 'ping_cm', lossField: 'loss_cm', nameKey: 'custom_cm_name', labelKey: 'pingCm', fallbackLabel: 'CM' },
-  { key: 'bd', pingField: 'ping_bd', lossField: 'loss_bd', nameKey: 'custom_bd_name', labelKey: 'pingBd', fallbackLabel: 'BGP' },
+  { key: 'ct', pingField: 'ping_ct', lossField: 'loss_ct', nameKey: 'custom_ct_name', labelKey: 'customCt', fallbackLabel: 'CT' },
+  { key: 'cu', pingField: 'ping_cu', lossField: 'loss_cu', nameKey: 'custom_cu_name', labelKey: 'customCu', fallbackLabel: 'CU' },
+  { key: 'cm', pingField: 'ping_cm', lossField: 'loss_cm', nameKey: 'custom_cm_name', labelKey: 'customCm', fallbackLabel: 'CM' },
+  { key: 'bd', pingField: 'ping_bd', lossField: 'loss_bd', nameKey: 'custom_bd_name', labelKey: null, fallbackLabel: 'BGP' },
   { key: 'node_1', pingField: 'ping_node_1', lossField: 'loss_node_1', nameKey: 'node_1_name', labelKey: null, fallbackLabel: 'Node 1' },
   { key: 'node_2', pingField: 'ping_node_2', lossField: 'loss_node_2', nameKey: 'node_2_name', labelKey: null, fallbackLabel: 'Node 2' },
   { key: 'node_3', pingField: 'ping_node_3', lossField: 'loss_node_3', nameKey: 'node_3_name', labelKey: null, fallbackLabel: 'Node 3' },
@@ -177,11 +178,7 @@ export function useServerCardData(props) {
     .split(',')
     .map(tag => tag.trim())
     .filter(Boolean)
-    return manual.length ? manual : automaticRouteTags(props.server.route_report, {
-      ct: props.sysConfig.custom_ct_name || trans.value.pingCt,
-      cu: props.sysConfig.custom_cu_name || trans.value.pingCu,
-      cm: props.sysConfig.custom_cm_name || trans.value.pingCm
-    }, routeClock.value)
+    return manual.length ? manual : automaticRouteTags(props.server.route_report, routeCarrierNames(props.sysConfig, trans.value), routeClock.value)
   })
   const tagColorClass = (index) => `tag-color-${index % 6}`
   const hasPublicIPv4 = computed(() => String(props.server.ip_v4 ?? '').trim() === '1')
@@ -455,14 +452,16 @@ export function useServerCardData(props) {
     }
   }
 
+  const threeNetPanelCount = computed(() => getThreeNetPanelCount(props.sysConfig?.theme_options))
+
   const threeNetDetails = computed(() => {
     const enabled = []
     const disabled = []
     for (const def of THREE_NET_DEFS) {
       (isDisabledByLatestLoss(def.key) ? disabled : enabled).push(def)
     }
-    // 启用的节点优先且保持原顺序；不足 3 个时用禁用节点按原顺序补位
-    return [...enabled, ...disabled].slice(0, 3).map(buildThreeNetRow)
+    // 启用的节点优先且保持原顺序；不足配置条数时用禁用节点按原顺序补位
+    return [...enabled, ...disabled].slice(0, threeNetPanelCount.value).map(buildThreeNetRow)
   })
 
   const hasThreeNetDetails = computed(() => threeNetDetails.value.length > 0)
@@ -533,6 +532,7 @@ export function useServerCardData(props) {
     hasPingData,
     threeNetDetails,
     hasThreeNetDetails,
+    threeNetPanelCount,
     getPublicAssetUrl,
     formatBytes
   }

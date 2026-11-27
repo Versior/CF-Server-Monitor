@@ -224,6 +224,7 @@ Headers: (可选) Authorization: Bearer <jwt>, X-Turnstile-Token / X-Turnstile-V
 | `default_language`   | string       | 默认语言：`auto` 按浏览器语言自动选择中文或英文 / `zh` 中文 / `en` 英文 |
 | `theme_options`      | object       | 第三方主题自定义配置；未配置时为空对象 |
 | `theme_options_patch` | boolean（可选） | 为 `true` 时支持按主题原子更新配置；未声明则仅支持完整对象写入 |
+| `theme_options_builtin_patch` | boolean（可选） | 为 `true` 时内置主题的两个根级显示设置可原子更新 |
 | `verified`           | boolean      | 当前请求是否已验证       |
 | `turnstile_verified` | string\|null | 已验证凭证，缓存复用 1 小时 |
 | `frontend_ws_timeout_minutes` | number | 前端实时订阅连接超时分钟数，范围 `0`-`1440`；默认 `0` 表示不超时 |
@@ -270,6 +271,8 @@ Headers: Authorization: Bearer <jwt>, Content-Type: application/json, X-Turnstil
 ```
 
 `namespace` 是非空的字母、数字、下划线或连字符组合，`options` 必须是对象。该格式和完整写入互斥。Worker 在一次 D1 写入中按 JSON Merge Patch 合并：未提交的键保留，`null` 删除键，数组整体替换。不同主题并发使用补丁不会互相覆盖；响应为这次写入后的完整 `theme_options`。原版 Worker 没有这项能力，必须先读取其当前配置，再合并并发送完整对象；读取和写入之间的并发修改仍可能丢失。
+
+内置主题的 `three_net_panel_count`（0–8 的整数）和 `color_preset`（非空预设名称）仍是根级键。当 `/api/config` 返回 `theme_options_builtin_patch: true` 时，管理员可省略 `namespace`，仅更新这两个键中的一项或两项：`{"theme_options_patch":{"options":{"three_net_panel_count":5,"color_preset":"ocean"}}}`。该写入不会覆盖其他主题的同期更改。未声明此能力的旧 Worker 仍走保存前重读、合并后完整写入的兼容路径，无法保证读写之间的并发安全。
 
 **Response**
 
@@ -817,6 +820,7 @@ interface SiteConfig {
   site_title: string;
   theme_options: Record<string, unknown>;
   theme_options_patch?: boolean;
+  theme_options_builtin_patch?: boolean;
   verified: boolean;
   turnstile_verified: string | null;
   frontend_ws_timeout_minutes: number;

@@ -344,6 +344,7 @@ export default {
           default_language: appearanceOptions.default_language || 'auto',
           theme_options: appearanceOptions.theme_options || {},
           theme_options_patch: true,
+          theme_options_builtin_patch: true,
           verified: verified,
           turnstile_verified: turnstileVerified,
           frontend_ws_timeout_minutes: Number(normalizeFrontendWsTimeoutMinutes(sys.frontend_ws_timeout_minutes)),
@@ -387,7 +388,7 @@ export default {
         const patch = data?.theme_options_patch;
         let themeOptions;
         if (patch !== undefined && data.theme_options === undefined && isValidThemeOptionsPatch(patch)) {
-          themeOptions = await patchThemeOptions(env.DB, patch.namespace, patch.options);
+          themeOptions = await patchThemeOptions(env.DB, patch);
         } else if (patch === undefined && isValidThemeOptions(data?.theme_options)) {
           themeOptions = await saveThemeOptions(env.DB, data.theme_options);
         } else {

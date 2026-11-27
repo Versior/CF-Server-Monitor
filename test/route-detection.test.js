@@ -1,6 +1,10 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Miniflare } from 'miniflare';
+import { createServer } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import { createSSRApp, h } from 'vue';
+import { renderToString } from 'vue/server-renderer';
 import { initDatabase } from '../src/database/schema.js';
 import { addServerColumns } from '../src/database/updateDatabase.js';
 import { handleRouteDetection } from '../src/handlers/routeDetection.js';
@@ -8,9 +12,39 @@ import { handleServerAPI, handleServersAPI } from '../src/handlers/dashboard.js'
 import { clearAllCaches, getAllServers } from '../src/utils/cache.js';
 import { normalizeRouteReport } from '../src/utils/routeDetection.js';
 import { automaticRouteTags } from '../src/frontend/utils/routeDetection.js';
+import { LANGUAGES } from '../src/frontend/locales/index.js';
 
 const evidence = (overrides = {}) => ({ carrier: 'ct', family: 4, status: 'ok', completed: true, hops: [[64500], [], [4809], [4134]], ...overrides });
 const report = (routes = [evidence()]) => ({ id: 'routes-demo', routes });
+
+test('route cards and the evidence panel use configured carrier names or the current locale', async (context) => {
+  const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null } });
+  context.after(() => { if (storage) Object.defineProperty(globalThis, 'localStorage', storage); else delete globalThis.localStorage; });
+  const vite = await createServer({ configFile: false, plugins: [vue()], appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, hmr: false, watch: null } });
+  context.after(() => vite.close());
+  const [{ default: Panel }, { useServerCardData }, { currentLang, translations }] = await Promise.all([
+    '/src/frontend/components/RouteDetectionPanel.vue', '/src/frontend/composables/useServerCardData.js', '/src/frontend/utils/i18n.js'
+  ].map(path => vite.ssrLoadModule(path)));
+  const routes = [evidence({ hops: [[4809]] }), evidence({ carrier: 'cu', family: 6, hops: [[9929]] }), evidence({ carrier: 'cm', hops: [[58453]] })];
+  for (const language of LANGUAGES) {
+    const { default: dictionary } = await language.load();
+    translations[language.code] = dictionary;
+    currentLang.value = language.code;
+    const result = normalizeRouteReport(report(routes)).report;
+    result.expires_at = Date.now() + 1000;
+    for (const sysConfig of [{}, { custom_ct_name: 'My Telecom', custom_cu_name: 'My Unicom', custom_cm_name: 'My Mobile' }]) {
+      const server = { route_report: result };
+      const html = await renderToString(createSSRApp({ setup() {
+        const { tagList } = useServerCardData({ server, sysConfig });
+        return () => h('article', [h('aside', tagList.value.join('|')), h(Panel, { report: result, config: sysConfig })]);
+      } }));
+      const names = [sysConfig.custom_ct_name || dictionary.customCt, sysConfig.custom_cu_name || dictionary.customCu, sysConfig.custom_cm_name || dictionary.customCm];
+      assert.ok(html.includes(`<aside>${names[0]} CN2|${names[1]} 9929|${names[2]} CMI</aside>`), language.code);
+      for (const [index, carrier] of names.entries()) assert.ok(html.includes(`${carrier} · IPv${routes[index].family}`), language.code);
+    }
+  }
+});
 
 test('expanded networks distinguish CTGNET, CUG and CMIN2 from CMI', () => {
   const result = normalizeRouteReport(report([evidence({ hops: [[23764], [10099], [58807], [58453]] })])).report;

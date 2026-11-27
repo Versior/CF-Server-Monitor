@@ -883,7 +883,13 @@ export function isValidThemeOptions(value) {
 }
 
 export function isValidThemeOptionsPatch(value) {
-  return typeof value?.namespace === 'string' && /^[a-zA-Z0-9_-]+$/.test(value.namespace) && isValidThemeOptions(value.options);
+  if (!isValidThemeOptions(value?.options)) return false;
+  if (value.namespace !== undefined) return typeof value.namespace === 'string' && /^[a-zA-Z0-9_-]+$/.test(value.namespace);
+  const entries = Object.entries(value.options);
+  return entries.length > 0 && entries.every(([key, option]) =>
+    (key === 'three_net_panel_count' && Number.isInteger(option) && option >= 0 && option <= 8) ||
+    (key === 'color_preset' && typeof option === 'string' && option.trim() !== '')
+  );
 }
 
 export async function saveThemeOptions(db, themeOptions) {
@@ -908,22 +914,23 @@ export async function saveThemeOptions(db, themeOptions) {
   return themeOptions;
 }
 
-export async function patchThemeOptions(db, themeNamespace, options) {
+export async function patchThemeOptions(db, { namespace, options }) {
+  const patch = namespace === undefined ? options : { [namespace]: options };
   const row = await db.prepare(
     `INSERT INTO settings (key, value)
-     VALUES ('appearance_options', json_object('theme_options', json_patch('{}', json_object(?1, json(?2)))))
+     VALUES ('appearance_options', json_object('theme_options', json_patch('{}', ?1)))
      ON CONFLICT(key) DO UPDATE SET value = CASE
        WHEN json_valid(value) THEN CASE
          WHEN json_type(value) = 'object' THEN json_set(value, '$.theme_options', json_patch(
            CASE WHEN json_type(value, '$.theme_options') = 'object' THEN json_extract(value, '$.theme_options') ELSE '{}' END,
-           json_object(?1, json(?2))
+           ?1
          ))
          ELSE excluded.value
        END
        ELSE excluded.value
      END
      RETURNING json_extract(value, '$.theme_options') AS theme_options`
-  ).bind(themeNamespace, JSON.stringify(options)).first();
+  ).bind(JSON.stringify(patch)).first();
   clearAppearanceSettingsCache();
   return JSON.parse(row.theme_options);
 }
